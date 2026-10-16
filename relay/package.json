@@ -5,7 +5,8 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit && npm run check:contract",
+    "check:contract": "node contract/check.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261016.1",

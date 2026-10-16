@@ -6,40 +6,15 @@
 // (OAuth) and every tool call are handled by the app on the Mac.
 
 import { DurableObject } from "cloudflare:workers";
+import { DEVICE_ID, buildRequestFrame, decodeResponseFrame, deviceRoute } from "./frames";
 
 export interface Env {
   DEVICES: DurableObjectNamespace<DeviceRelay>;
 }
 
-const DEVICE_ID = /^[0-9a-f]{32}$/;
 const MAX_BODY_BYTES = 1024 * 1024;
 // Sign-in waits up to 90 s for the person at the Mac to click Allow.
 const REQUEST_TIMEOUT_MS = 100_000;
-const FORWARDED_REQUEST_HEADERS = ["accept", "authorization", "content-type", "mcp-protocol-version", "user-agent"];
-const RETURNED_RESPONSE_HEADERS = ["allow", "cache-control", "content-type", "location", "www-authenticate"];
-
-interface RequestFrame {
-  type: "request";
-  id: string;
-  method: string;
-  path: string;
-  query: string;
-  headers: Record<string, string>;
-  body: string;
-}
-
-interface ResponseFrame {
-  type: "response";
-  id: string;
-  status: number;
-  headers: Record<string, string>;
-  body: string;
-}
-
-interface DeviceRoute {
-  device: string;
-  path: string;
-}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -63,17 +38,6 @@ export default {
     return env.DEVICES.get(env.DEVICES.idFromName(route.device)).fetch(forwarded);
   },
 } satisfies ExportedHandler<Env>;
-
-/// `/d/<device>/rest` and RFC 8414/9728 path-inserted discovery, `/.well-known/<name>/d/<device>/rest`.
-function deviceRoute(pathname: string): DeviceRoute | null {
-  const direct = pathname.match(/^\/d\/([0-9a-f]{32})(\/.*)?$/);
-  if (direct?.[1]) return { device: direct[1], path: direct[2] ?? "/" };
-  const discovery = pathname.match(/^\/\.well-known\/([a-z-]+)\/d\/([0-9a-f]{32})(\/.*)?$/);
-  if (discovery?.[1] && discovery[2]) {
-    return { device: discovery[2], path: `/.well-known/${discovery[1]}${discovery[3] ?? ""}` };
-  }
-  return null;
-}
 
 export class DeviceRelay extends DurableObject<Env> {
   private readonly pending = new Map<string, (response: Response) => void>();
@@ -119,24 +83,16 @@ export class DeviceRelay extends DurableObject<Env> {
     if (!socket) return offline(request.method, request.headers.get("x-relay-path"), body);
 
     const url = new URL(request.url);
-    const headers: Record<string, string> = {
-      host: url.host,
-      "x-forwarded-proto": "https",
-      "x-forwarded-prefix": request.headers.get("x-relay-prefix") ?? "",
-    };
-    for (const name of FORWARDED_REQUEST_HEADERS) {
-      const value = request.headers.get(name);
-      if (value !== null) headers[name] = value;
-    }
-    const frame: RequestFrame = {
-      type: "request",
+    const frame = buildRequestFrame({
       id: crypto.randomUUID(),
       method: request.method,
       path: request.headers.get("x-relay-path") ?? "/",
       query: url.search.slice(1),
-      headers,
-      body: toBase64(new Uint8Array(body)),
-    };
+      host: url.host,
+      prefix: request.headers.get("x-relay-prefix") ?? "",
+      headers: request.headers,
+      body: new Uint8Array(body),
+    });
 
     return new Promise<Response>((resolve) => {
       const timer = setTimeout(() => {
@@ -159,25 +115,14 @@ export class DeviceRelay extends DurableObject<Env> {
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (typeof message !== "string") return;
-    let frame: ResponseFrame;
-    try {
-      frame = JSON.parse(message) as ResponseFrame;
-    } catch {
-      return;
-    }
-    if (frame.type !== "response" || typeof frame.id !== "string") return;
+    const frame = decodeResponseFrame(message);
+    if (!frame) return;
     const resolve = this.pending.get(frame.id);
     if (!resolve) return;
     this.pending.delete(frame.id);
 
-    const headers = new Headers();
-    for (const [name, value] of Object.entries(frame.headers ?? {})) {
-      if (RETURNED_RESPONSE_HEADERS.includes(name.toLowerCase())) headers.set(name, String(value));
-    }
-    const status = Number.isInteger(frame.status) && frame.status >= 200 && frame.status <= 599 ? frame.status : 502;
-    const bytes = fromBase64(frame.body ?? "");
-    const noBody = status === 204 || status === 205 || status === 304;
-    resolve(new Response(noBody ? null : bytes, { status, headers }));
+    const noBody = frame.status === 204 || frame.status === 205 || frame.status === 304;
+    resolve(new Response(noBody ? null : frame.body, { status: frame.status, headers: frame.headers }));
   }
 
   async webSocketClose(socket: WebSocket, code: number, reason: string): Promise<void> {
@@ -238,19 +183,4 @@ function equalStrings(a: string, b: string): boolean {
   let difference = 0;
   for (let index = 0; index < a.length; index++) difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
   return difference === 0;
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-  }
-  return btoa(binary);
-}
-
-function fromBase64(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  return bytes;
 }

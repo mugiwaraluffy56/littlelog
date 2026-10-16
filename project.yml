@@ -49,6 +49,9 @@ targets:
     platform: macOS
     sources:
       - path: Tests
+      # Shared with relay/contract/check.mjs, so both sides test the same wire format.
+      - path: relay/contract/frames.json
+        buildPhase: resources
     dependencies:
       - target: littlelog
     settings:

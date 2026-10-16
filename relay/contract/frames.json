@@ -1,0 +1,57 @@
+{
+  "device": "0123456789abcdef0123456789abcdef",
+  "request": {
+    "input": {
+      "id": "r1",
+      "method": "POST",
+      "path": "/mcp",
+      "query": "x=1",
+      "host": "relay.example",
+      "prefix": "/d/0123456789abcdef0123456789abcdef",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer abc",
+        "cookie": "must-not-be-forwarded"
+      },
+      "body": "{\"a\":1}"
+    },
+    "frame": {
+      "type": "request",
+      "id": "r1",
+      "method": "POST",
+      "path": "/mcp",
+      "query": "x=1",
+      "headers": {
+        "host": "relay.example",
+        "x-forwarded-proto": "https",
+        "x-forwarded-prefix": "/d/0123456789abcdef0123456789abcdef",
+        "content-type": "application/json",
+        "authorization": "Bearer abc"
+      },
+      "body": "eyJhIjoxfQ=="
+    }
+  },
+  "response": {
+    "mac": {
+      "id": "r1",
+      "status": 302,
+      "headers": { "Location": "https://chatgpt.com/cb?code=1", "Content-Type": "application/json" },
+      "body": "{}"
+    },
+    "frame": {
+      "type": "response",
+      "id": "r1",
+      "status": 302,
+      "headers": { "Location": "https://chatgpt.com/cb?code=1", "Content-Type": "application/json" },
+      "body": "e30="
+    }
+  },
+  "routes": [
+    { "path": "/d/0123456789abcdef0123456789abcdef/mcp", "device": "0123456789abcdef0123456789abcdef", "routed": "/mcp" },
+    { "path": "/d/0123456789abcdef0123456789abcdef", "device": "0123456789abcdef0123456789abcdef", "routed": "/" },
+    { "path": "/.well-known/oauth-authorization-server/d/0123456789abcdef0123456789abcdef", "device": "0123456789abcdef0123456789abcdef", "routed": "/.well-known/oauth-authorization-server" },
+    { "path": "/.well-known/oauth-protected-resource/d/0123456789abcdef0123456789abcdef/mcp", "device": "0123456789abcdef0123456789abcdef", "routed": "/.well-known/oauth-protected-resource/mcp" },
+    { "path": "/d/xyz/mcp", "device": null, "routed": null },
+    { "path": "/nope", "device": null, "routed": null }
+  ]
+}

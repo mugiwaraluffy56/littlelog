@@ -17,24 +17,64 @@ final class MCPServer {
         self.oauth = oauth
     }
 
+    /// Every path this Mac serves. Sign-in and MCP share this one table.
+    private enum Route {
+        case protectedResource
+        case authorizationServer
+        case register
+        case authorize
+        case token
+        case mcp
+
+        init?(path: String) {
+            switch path {
+            case "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp":
+                self = .protectedResource
+            case "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp",
+                 "/.well-known/openid-configuration":
+                self = .authorizationServer
+            case "/oauth/register": self = .register
+            case "/oauth/authorize": self = .authorize
+            case "/oauth/token": self = .token
+            case MCPServer.endpointPath: self = .mcp
+            default: return nil
+            }
+        }
+
+        var method: String {
+            switch self {
+            case .protectedResource, .authorizationServer, .authorize: "GET"
+            case .register, .token, .mcp: "POST"
+            }
+        }
+    }
+
     func respond(to request: HTTPRequest) async -> HTTPResponse {
         guard let base = Self.baseURL(for: request) else {
             return .text("Requests must come through the littlelog relay", status: 403)
         }
-        if let response = await oauth.respond(to: request, baseURL: base) {
-            return response
-        }
-        guard request.path == Self.endpointPath else {
+        guard let route = Route(path: request.path) else {
             return .text("Not found", status: 404)
         }
+        guard request.method == route.method else {
+            return .text("Use \(route.method)", status: 405, headers: ["Allow": route.method])
+        }
+        switch route {
+        case .protectedResource: return oauth.protectedResourceMetadata(baseURL: base)
+        case .authorizationServer: return oauth.authorizationServerMetadata(baseURL: base)
+        case .register: return oauth.register(request)
+        case .authorize: return await oauth.authorize(request)
+        case .token: return oauth.token(request)
+        case .mcp: return respondToMCP(request, base: base)
+        }
+    }
+
+    private func respondToMCP(_ request: HTTPRequest, base: String) -> HTTPResponse {
         // Every MCP call needs a sign-in that was approved on this Mac.
         guard let token = Self.bearerToken(request.header("authorization")), oauth.store.isValidAccessToken(token) else {
             return .text("Missing or invalid access token", status: 401, headers: [
                 "WWW-Authenticate": "Bearer realm=\"littlelog\", resource_metadata=\"\(base)/.well-known/oauth-protected-resource\"",
             ])
-        }
-        guard request.method == "POST" else {
-            return .text("Use POST", status: 405, headers: ["Allow": "POST"])
         }
         if let version = request.header("mcp-protocol-version"), !Self.supportedVersions.contains(version) {
             return .text("Unsupported MCP-Protocol-Version \(version)", status: 400)

@@ -14,49 +14,35 @@ final class OAuthEndpoints {
         self.approve = approve
     }
 
-    /// Returns `nil` for paths this type doesn't serve.
-    func respond(to request: HTTPRequest, baseURL: String) async -> HTTPResponse? {
-        switch request.path {
-        case "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp":
-            guard request.method == "GET" else { return .text("Use GET", status: 405, headers: ["Allow": "GET"]) }
-            return .json([
-                "resource": .string(baseURL + MCPServer.endpointPath),
-                "authorization_servers": [.string(baseURL)],
-                "bearer_methods_supported": ["header"],
-                "scopes_supported": [.string(Self.scope)],
-                "resource_name": "littlelog",
-            ])
-        case "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp",
-             "/.well-known/openid-configuration":
-            guard request.method == "GET" else { return .text("Use GET", status: 405, headers: ["Allow": "GET"]) }
-            return .json([
-                "issuer": .string(baseURL),
-                "authorization_endpoint": .string(baseURL + "/oauth/authorize"),
-                "token_endpoint": .string(baseURL + "/oauth/token"),
-                "registration_endpoint": .string(baseURL + "/oauth/register"),
-                "response_types_supported": ["code"],
-                "grant_types_supported": ["authorization_code", "refresh_token"],
-                "code_challenge_methods_supported": ["S256"],
-                "token_endpoint_auth_methods_supported": ["none"],
-                "scopes_supported": [.string(Self.scope)],
-            ])
-        case "/oauth/register":
-            guard request.method == "POST" else { return .text("Use POST", status: 405, headers: ["Allow": "POST"]) }
-            return register(request)
-        case "/oauth/authorize":
-            guard request.method == "GET" else { return .text("Use GET", status: 405, headers: ["Allow": "GET"]) }
-            return await authorize(request)
-        case "/oauth/token":
-            guard request.method == "POST" else { return .text("Use POST", status: 405, headers: ["Allow": "POST"]) }
-            return token(request)
-        default:
-            return nil
-        }
+    /// RFC 9728: where ChatGPT learns which authorization server protects `/mcp`.
+    func protectedResourceMetadata(baseURL: String) -> HTTPResponse {
+        .json([
+            "resource": .string(baseURL + MCPServer.endpointPath),
+            "authorization_servers": [.string(baseURL)],
+            "bearer_methods_supported": ["header"],
+            "scopes_supported": [.string(Self.scope)],
+            "resource_name": "littlelog",
+        ])
+    }
+
+    /// RFC 8414: the sign-in endpoints and what they support.
+    func authorizationServerMetadata(baseURL: String) -> HTTPResponse {
+        .json([
+            "issuer": .string(baseURL),
+            "authorization_endpoint": .string(baseURL + "/oauth/authorize"),
+            "token_endpoint": .string(baseURL + "/oauth/token"),
+            "registration_endpoint": .string(baseURL + "/oauth/register"),
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["none"],
+            "scopes_supported": [.string(Self.scope)],
+        ])
     }
 
     // MARK: Registration
 
-    private func register(_ request: HTTPRequest) -> HTTPResponse {
+    func register(_ request: HTTPRequest) -> HTTPResponse {
         guard let metadata = try? JSONValue.decode(request.body), metadata.objectValue != nil else {
             return Self.oauthError("invalid_client_metadata", "Body must be a JSON object", status: 400)
         }
@@ -84,7 +70,7 @@ final class OAuthEndpoints {
 
     // MARK: Authorization
 
-    private func authorize(_ request: HTTPRequest) async -> HTTPResponse {
+    func authorize(_ request: HTTPRequest) async -> HTTPResponse {
         let query = request.query
         // Until the client and redirect URI check out, errors are shown here, never redirected.
         guard let clientID = query["client_id"], let client = store.client(id: clientID) else {
@@ -120,7 +106,7 @@ final class OAuthEndpoints {
 
     // MARK: Tokens
 
-    private func token(_ request: HTTPRequest) -> HTTPResponse {
+    func token(_ request: HTTPRequest) -> HTTPResponse {
         let form = FormEncoding.decode(String(decoding: request.body, as: UTF8.self))
         guard let clientID = form["client_id"], store.client(id: clientID) != nil else {
             return Self.oauthError("invalid_client", "Unknown client_id", status: 401)

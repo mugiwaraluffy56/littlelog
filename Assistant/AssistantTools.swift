@@ -1,13 +1,18 @@
 import Foundation
 
 /// The MCP tools littlelog exposes. Tasks are fully manageable; notes are read-only.
+/// Each tool is one value: its definition (what ChatGPT sees) and the code that runs it.
 final class AssistantTools {
     struct Outcome {
         let structured: JSONValue
         let isError: Bool
     }
 
-    private struct Definition {
+    struct UnknownTool: Error {
+        let name: String
+    }
+
+    private struct Tool {
         let name: String
         let title: String
         let description: String
@@ -16,8 +21,9 @@ final class AssistantTools {
         let readOnly: Bool
         let destructive: Bool
         let idempotent: Bool
+        let run: @MainActor (Library, Arguments) throws -> JSONValue
 
-        var json: JSONValue {
+        var definition: JSONValue {
             [
                 "name": .string(name),
                 "title": .string(title),
@@ -41,27 +47,15 @@ final class AssistantTools {
         self.library = library
     }
 
-    var definitions: [JSONValue] { Self.all.map(\.json) }
+    var definitions: [JSONValue] { Self.all.map(\.definition) }
 
     /// Runs a tool. Problems with the call itself (bad arguments, unknown ids, failed saves) come
     /// back as an error outcome the model can read and correct, per the MCP spec.
     func call(_ name: String, arguments: JSONValue?) throws(UnknownTool) -> Outcome {
-        let args = Arguments(arguments?.objectValue ?? [:])
+        guard let tool = Self.all.first(where: { $0.name == name }) else { throw UnknownTool(name: name) }
         do {
-            let structured: JSONValue = switch name {
-            case "list_tasks": try listTasks(args)
-            case "add_tasks": try addTasks(args)
-            case "set_task_completed": try setTaskCompleted(args)
-            case "update_task": try updateTask(args)
-            case "move_task": try moveTask(args)
-            case "delete_task": try deleteTask(args)
-            case "search_notes": try searchNotes(args)
-            case "read_note": try readNote(args)
-            default: throw UnknownTool(name: name)
-            }
+            let structured = try tool.run(library, Arguments(arguments?.objectValue ?? [:]))
             return Outcome(structured: structured, isError: false)
-        } catch let error as UnknownTool {
-            throw error
         } catch let error as LibraryError {
             return Outcome(structured: ["error": .string(error.localizedDescription)], isError: true)
         } catch {
@@ -72,94 +66,9 @@ final class AssistantTools {
         }
     }
 
-    struct UnknownTool: Error {
-        let name: String
-    }
-
-    // MARK: Tools
-
-    private func listTasks(_ args: Arguments) throws -> JSONValue {
-        let dayKey = try library.resolveDay(args.string("date"))
-        let tasks = try library.tasks(on: dayKey)
-        let completed = tasks.filter(\.isCompleted).count
-        return dayPayload(dayKey).merging([
-            "tasks": .array(tasks.map(taskPayload)),
-            "remaining": .int(tasks.count - completed),
-            "completed": .int(completed),
-        ])
-    }
-
-    private func addTasks(_ args: Arguments) throws -> JSONValue {
-        let dayKey = try library.resolveDay(args.string("date"))
-        let texts = try args.requiredStrings("tasks")
-        guard (1...50).contains(texts.count) else {
-            throw LibraryError.invalidArgument("Provide between 1 and 50 tasks.")
-        }
-        let result = try library.addTasks(texts, on: dayKey, byAssistant: true)
-        return dayPayload(dayKey).merging([
-            "added": .array(result.added.map(taskPayload)),
-            "skipped": .array(result.skipped.map { ["text": .string($0.text), "reason": .string($0.reason)] }),
-        ])
-    }
-
-    private func setTaskCompleted(_ args: Arguments) throws -> JSONValue {
-        let task = try library.task(id: args.requiredUUID("id"))
-        try library.setCompleted(task, args.requiredBool("completed"))
-        return ["task": taskPayload(task)]
-    }
-
-    private func updateTask(_ args: Arguments) throws -> JSONValue {
-        let task = try library.task(id: args.requiredUUID("id"))
-        try library.rename(task, to: args.requiredString("text"))
-        return ["task": taskPayload(task)]
-    }
-
-    private func moveTask(_ args: Arguments) throws -> JSONValue {
-        let task = try library.task(id: args.requiredUUID("id"))
-        let ordered = try library.moveTask(task, to: args.requiredInt("position"))
-        return dayPayload(task.dateKey).merging(["tasks": .array(ordered.map(taskPayload))])
-    }
-
-    private func deleteTask(_ args: Arguments) throws -> JSONValue {
-        let task = try library.task(id: args.requiredUUID("id"))
-        let payload = taskPayload(task)
-        try library.removeTask(task)
-        return ["deleted": payload]
-    }
-
-    private func searchNotes(_ args: Arguments) throws -> JSONValue {
-        let limit = try args.int("limit") ?? 10
-        guard (1...50).contains(limit) else {
-            throw LibraryError.invalidArgument("limit must be between 1 and 50.")
-        }
-        let notes = try library.searchNotes(args.string("query") ?? "", limit: limit)
-        return ["notes": .array(notes.map { note in
-            [
-                "id": .string(note.id.uuidString),
-                "title": .string(note.displayTitle),
-                "preview": note.preview.map(JSONValue.string) ?? .null,
-                "updated_at": .string(note.updatedAt.ISO8601Format()),
-            ]
-        })]
-    }
-
-    private func readNote(_ args: Arguments) throws -> JSONValue {
-        let id = try args.requiredUUID("id")
-        guard let note = try library.note(id: id), !note.isBlank else {
-            throw LibraryError.notFound("No note has id \(id.uuidString). Call search_notes to find notes.")
-        }
-        return [
-            "id": .string(note.id.uuidString),
-            "title": .string(note.displayTitle),
-            "content": .string(note.content),
-            "created_at": .string(note.createdAt.ISO8601Format()),
-            "updated_at": .string(note.updatedAt.ISO8601Format()),
-        ]
-    }
-
     // MARK: Payloads
 
-    private func taskPayload(_ task: DailyTask) -> JSONValue {
+    private static func taskPayload(_ task: DailyTask) -> JSONValue {
         [
             "id": .string(task.id.uuidString),
             "text": .string(task.text),
@@ -169,8 +78,7 @@ final class AssistantTools {
         ]
     }
 
-    private func dayPayload(_ dayKey: String) -> JSONValue {
-        let today = library.dayKey
+    private static func dayPayload(_ dayKey: String, _ library: Library) -> JSONValue {
         let calendar = library.calendar
         var relative: JSONValue = .null
         for (offset, word) in [(0, "today"), (1, "tomorrow"), (-1, "yesterday")] {
@@ -181,10 +89,10 @@ final class AssistantTools {
         }
         let label = DayKey.date(for: dayKey, calendar: calendar)
             .map { $0.formatted(.dateTime.weekday(.wide).month(.wide).day().year()) } ?? dayKey
-        return ["date": .string(dayKey), "label": .string(label), "relative": relative, "today": .string(today)]
+        return ["date": .string(dayKey), "label": .string(label), "relative": relative, "today": .string(library.dayKey)]
     }
 
-    // MARK: Definitions
+    // MARK: Schemas
 
     private static let dateProperty: JSONValue = [
         "type": "string",
@@ -222,20 +130,32 @@ final class AssistantTools {
         ]
     }
 
-    private static let all: [Definition] = [
-        Definition(
+    // MARK: Tools
+
+    private static let all: [Tool] = [
+        Tool(
             name: "list_tasks",
             title: "List Tasks",
-            description: "Lists the user's tasks for one day in their chosen order, with completion library. Use this before changing tasks to get current ids.",
+            description: "Lists the user's tasks for one day in their chosen order, with completion status. Use this before changing tasks to get current ids.",
             inputSchema: object(["date": dateProperty], required: []),
             outputSchema: object(dayProperties.merging([
                 "tasks": ["type": "array", "items": taskSchema],
                 "remaining": ["type": "integer"],
                 "completed": ["type": "integer"],
             ]) { _, new in new }, required: ["date", "label", "tasks", "remaining", "completed"]),
-            readOnly: true, destructive: false, idempotent: true
+            readOnly: true, destructive: false, idempotent: true,
+            run: { library, args in
+                let dayKey = try library.resolveDay(args.string("date"))
+                let tasks = try library.tasks(on: dayKey)
+                let completed = tasks.filter(\.isCompleted).count
+                return dayPayload(dayKey, library).merging([
+                    "tasks": .array(tasks.map(taskPayload)),
+                    "remaining": .int(tasks.count - completed),
+                    "completed": .int(completed),
+                ])
+            }
         ),
-        Definition(
+        Tool(
             name: "add_tasks",
             title: "Add Tasks",
             description: "Appends tasks to a day's list (today by default). Tasks already on that day's list are skipped, so repeating a call is safe.",
@@ -256,17 +176,34 @@ final class AssistantTools {
                     "properties": ["text": ["type": "string"], "reason": ["type": "string"]],
                 ]],
             ]) { _, new in new }, required: ["date", "added", "skipped"]),
-            readOnly: false, destructive: false, idempotent: true
+            readOnly: false, destructive: false, idempotent: true,
+            run: { library, args in
+                let dayKey = try library.resolveDay(args.string("date"))
+                let texts = try args.requiredStrings("tasks")
+                guard (1...50).contains(texts.count) else {
+                    throw LibraryError.invalidArgument("Provide between 1 and 50 tasks.")
+                }
+                let result = try library.addTasks(texts, on: dayKey, byAssistant: true)
+                return dayPayload(dayKey, library).merging([
+                    "added": .array(result.added.map(taskPayload)),
+                    "skipped": .array(result.skipped.map { ["text": .string($0.text), "reason": .string($0.reason)] }),
+                ])
+            }
         ),
-        Definition(
+        Tool(
             name: "set_task_completed",
             title: "Complete Task",
             description: "Marks a task as done or not done.",
             inputSchema: object(["id": idProperty, "completed": ["type": "boolean"]], required: ["id", "completed"]),
             outputSchema: object(["task": taskSchema], required: ["task"]),
-            readOnly: false, destructive: false, idempotent: true
+            readOnly: false, destructive: false, idempotent: true,
+            run: { library, args in
+                let task = try library.task(id: args.requiredUUID("id"))
+                try library.setCompleted(task, args.requiredBool("completed"))
+                return ["task": taskPayload(task)]
+            }
         ),
-        Definition(
+        Tool(
             name: "update_task",
             title: "Edit Task",
             description: "Replaces a task's text.",
@@ -275,9 +212,14 @@ final class AssistantTools {
                 "text": ["type": "string", "minLength": 1, "maxLength": .int(Library.maxTaskLength)],
             ], required: ["id", "text"]),
             outputSchema: object(["task": taskSchema], required: ["task"]),
-            readOnly: false, destructive: false, idempotent: true
+            readOnly: false, destructive: false, idempotent: true,
+            run: { library, args in
+                let task = try library.task(id: args.requiredUUID("id"))
+                try library.rename(task, to: args.requiredString("text"))
+                return ["task": taskPayload(task)]
+            }
         ),
-        Definition(
+        Tool(
             name: "move_task",
             title: "Reorder Task",
             description: "Moves a task to a 0-based position within its day's list, e.g. 0 to put it first.",
@@ -285,17 +227,28 @@ final class AssistantTools {
             outputSchema: object(dayProperties.merging([
                 "tasks": ["type": "array", "items": taskSchema],
             ]) { _, new in new }, required: ["date", "tasks"]),
-            readOnly: false, destructive: false, idempotent: true
+            readOnly: false, destructive: false, idempotent: true,
+            run: { library, args in
+                let task = try library.task(id: args.requiredUUID("id"))
+                let ordered = try library.moveTask(task, to: args.requiredInt("position"))
+                return dayPayload(task.dateKey, library).merging(["tasks": .array(ordered.map(taskPayload))])
+            }
         ),
-        Definition(
+        Tool(
             name: "delete_task",
             title: "Delete Task",
             description: "Permanently deletes a task. Only do this when the user asks; prefer set_task_completed for finished tasks.",
             inputSchema: object(["id": idProperty], required: ["id"]),
             outputSchema: object(["deleted": taskSchema], required: ["deleted"]),
-            readOnly: false, destructive: true, idempotent: false
+            readOnly: false, destructive: true, idempotent: false,
+            run: { library, args in
+                let task = try library.task(id: args.requiredUUID("id"))
+                let payload = taskPayload(task)
+                try library.removeTask(task)
+                return ["deleted": payload]
+            }
         ),
-        Definition(
+        Tool(
             name: "search_notes",
             title: "Search Notes",
             description: "Finds the user's notes by words in the title or body, most recently edited first. An empty query returns recent notes. Notes are read-only.",
@@ -312,9 +265,24 @@ final class AssistantTools {
                     "updated_at": ["type": "string"],
                 ],
             ]]], required: ["notes"]),
-            readOnly: true, destructive: false, idempotent: true
+            readOnly: true, destructive: false, idempotent: true,
+            run: { library, args in
+                let limit = try args.int("limit") ?? 10
+                guard (1...50).contains(limit) else {
+                    throw LibraryError.invalidArgument("limit must be between 1 and 50.")
+                }
+                let notes = try library.searchNotes(args.string("query") ?? "", limit: limit)
+                return ["notes": .array(notes.map { note in
+                    [
+                        "id": .string(note.id.uuidString),
+                        "title": .string(note.displayTitle),
+                        "preview": note.preview.map(JSONValue.string) ?? .null,
+                        "updated_at": .string(note.updatedAt.ISO8601Format()),
+                    ]
+                })]
+            }
         ),
-        Definition(
+        Tool(
             name: "read_note",
             title: "Read Note",
             description: "Returns one note's full text.",
@@ -326,7 +294,20 @@ final class AssistantTools {
                 "created_at": ["type": "string"],
                 "updated_at": ["type": "string"],
             ], required: ["id", "title", "content"]),
-            readOnly: true, destructive: false, idempotent: true
+            readOnly: true, destructive: false, idempotent: true,
+            run: { library, args in
+                let id = try args.requiredUUID("id")
+                guard let note = try library.note(id: id), !note.isBlank else {
+                    throw LibraryError.notFound("No note has id \(id.uuidString). Call search_notes to find notes.")
+                }
+                return [
+                    "id": .string(note.id.uuidString),
+                    "title": .string(note.displayTitle),
+                    "content": .string(note.content),
+                    "created_at": .string(note.createdAt.ISO8601Format()),
+                    "updated_at": .string(note.updatedAt.ISO8601Format()),
+                ]
+            }
         ),
     ]
 }

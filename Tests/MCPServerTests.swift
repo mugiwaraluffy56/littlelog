@@ -90,6 +90,16 @@ struct MCPServerTests {
         #expect(reply["result"] == [:])
     }
 
+    @Test func everyAdvertisedToolIsCallable() async throws {
+        let tools = try #require(try await rpc("tools/list")["result"]?["tools"]?.arrayValue)
+        for tool in tools {
+            let name = try #require(tool["name"]?.stringValue)
+            // Empty arguments are invalid for most tools; what matters is the tool exists.
+            let reply = try await rpc("tools/call", ["name": .string(name), "arguments": [:]])
+            #expect(reply["error"] == nil, "\(name) is advertised but not callable")
+        }
+    }
+
     @Test func toolsListHasAnnotatedTools() async throws {
         let tools = try #require(try await rpc("tools/list")["result"]?["tools"]?.arrayValue)
         let byName = Dictionary(uniqueKeysWithValues: tools.compactMap { tool in tool["name"]?.stringValue.map { ($0, tool) } })

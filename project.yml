@@ -1,0 +1,64 @@
+name: littlelog
+options:
+  bundleIdPrefix: dev.littlelog
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ARCHS: arm64
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+
+targets:
+  littlelog:
+    type: application
+    platform: macOS
+    sources:
+      - path: littlelog
+    settings:
+      base:
+        PRODUCT_NAME: littlelog
+        PRODUCT_BUNDLE_IDENTIFIER: dev.littlelog.app
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_CFBundleDisplayName: littlelog
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_ENTITLEMENTS: littlelog/littlelog.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+
+  littlelogTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: littlelogTests
+    dependencies:
+      - target: littlelog
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.littlelog.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/littlelog.app/Contents/MacOS/littlelog"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  littlelog:
+    build:
+      targets:
+        littlelog: all
+    test:
+      targets:
+        - littlelogTests

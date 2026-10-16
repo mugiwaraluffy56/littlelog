@@ -15,12 +15,13 @@ struct PersistenceTests {
         let noteID: UUID
         do {
             let container = try Persistence.makeContainer(url: url)
-            let state = AppState(context: container.mainContext)
+            let library = Library(context: container.mainContext)
+            let state = AppState(library: library)
             state.newNote()
             let note = try #require(state.openNote)
             note.title = "groceries"
             note.content = "eggs\nmilk"
-            state.noteDidChange(note)
+            library.noteDidChange(note)
             noteID = note.id
             state.closeEditor()
 

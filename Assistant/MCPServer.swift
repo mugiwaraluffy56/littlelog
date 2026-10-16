@@ -8,12 +8,12 @@ final class MCPServer {
     static let supportedVersions = ["2025-11-25", "2025-06-18", "2025-03-26"]
 
     private let tools: AssistantTools
-    private let state: AppState
+    private let library: Library
     private let oauth: OAuthEndpoints
 
-    init(state: AppState, oauth: OAuthEndpoints) {
-        self.state = state
-        self.tools = AssistantTools(state: state)
+    init(library: Library, oauth: OAuthEndpoints) {
+        self.library = library
+        self.tools = AssistantTools(library: library)
         self.oauth = oauth
     }
 
@@ -102,11 +102,11 @@ final class MCPServer {
     }
 
     private func instructions() -> String {
-        state.refreshDay()
-        let today = state.day.formatted(.dateTime.weekday(.wide).month(.wide).day().year())
+        library.refreshDay()
+        let today = library.day.formatted(.dateTime.weekday(.wide).month(.wide).day().year())
         return """
         littlelog is the user's personal notes and daily task list on their Mac. \
-        Today is \(today) (\(state.dayKey)) in the user's time zone. \
+        Today is \(today) (\(library.dayKey)) in the user's time zone. \
         Each task belongs to one local day; dates accept today, tomorrow, yesterday or YYYY-MM-DD. \
         Call list_tasks before changing tasks so you use real ids. \
         Keep task text short and in the user's own words. \

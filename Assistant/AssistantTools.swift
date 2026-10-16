@@ -35,10 +35,10 @@ final class AssistantTools {
         }
     }
 
-    private let state: AppState
+    private let library: Library
 
-    init(state: AppState) {
-        self.state = state
+    init(library: Library) {
+        self.library = library
     }
 
     var definitions: [JSONValue] { Self.all.map(\.json) }
@@ -62,7 +62,7 @@ final class AssistantTools {
             return Outcome(structured: structured, isError: false)
         } catch let error as UnknownTool {
             throw error
-        } catch let error as AssistantError {
+        } catch let error as LibraryError {
             return Outcome(structured: ["error": .string(error.localizedDescription)], isError: true)
         } catch {
             return Outcome(
@@ -79,8 +79,8 @@ final class AssistantTools {
     // MARK: Tools
 
     private func listTasks(_ args: Arguments) throws -> JSONValue {
-        let dayKey = try state.assistantDayKey(args.string("date"))
-        let tasks = try state.tasks(on: dayKey)
+        let dayKey = try library.resolveDay(args.string("date"))
+        let tasks = try library.tasks(on: dayKey)
         let completed = tasks.filter(\.isCompleted).count
         return dayPayload(dayKey).merging([
             "tasks": .array(tasks.map(taskPayload)),
@@ -90,12 +90,12 @@ final class AssistantTools {
     }
 
     private func addTasks(_ args: Arguments) throws -> JSONValue {
-        let dayKey = try state.assistantDayKey(args.string("date"))
+        let dayKey = try library.resolveDay(args.string("date"))
         let texts = try args.requiredStrings("tasks")
         guard (1...50).contains(texts.count) else {
-            throw AssistantError.invalidArgument("Provide between 1 and 50 tasks.")
+            throw LibraryError.invalidArgument("Provide between 1 and 50 tasks.")
         }
-        let result = try state.addAssistantTasks(texts, on: dayKey)
+        let result = try library.addTasks(texts, on: dayKey, byAssistant: true)
         return dayPayload(dayKey).merging([
             "added": .array(result.added.map(taskPayload)),
             "skipped": .array(result.skipped.map { ["text": .string($0.text), "reason": .string($0.reason)] }),
@@ -103,36 +103,36 @@ final class AssistantTools {
     }
 
     private func setTaskCompleted(_ args: Arguments) throws -> JSONValue {
-        let task = try state.task(id: args.requiredUUID("id"))
-        try state.setCompleted(task, args.requiredBool("completed"))
+        let task = try library.task(id: args.requiredUUID("id"))
+        try library.setCompleted(task, args.requiredBool("completed"))
         return ["task": taskPayload(task)]
     }
 
     private func updateTask(_ args: Arguments) throws -> JSONValue {
-        let task = try state.task(id: args.requiredUUID("id"))
-        try state.renameTask(task, to: args.requiredString("text"))
+        let task = try library.task(id: args.requiredUUID("id"))
+        try library.rename(task, to: args.requiredString("text"))
         return ["task": taskPayload(task)]
     }
 
     private func moveTask(_ args: Arguments) throws -> JSONValue {
-        let task = try state.task(id: args.requiredUUID("id"))
-        let ordered = try state.moveTask(task, to: args.requiredInt("position"))
+        let task = try library.task(id: args.requiredUUID("id"))
+        let ordered = try library.moveTask(task, to: args.requiredInt("position"))
         return dayPayload(task.dateKey).merging(["tasks": .array(ordered.map(taskPayload))])
     }
 
     private func deleteTask(_ args: Arguments) throws -> JSONValue {
-        let task = try state.task(id: args.requiredUUID("id"))
+        let task = try library.task(id: args.requiredUUID("id"))
         let payload = taskPayload(task)
-        try state.removeTask(task)
+        try library.removeTask(task)
         return ["deleted": payload]
     }
 
     private func searchNotes(_ args: Arguments) throws -> JSONValue {
         let limit = try args.int("limit") ?? 10
         guard (1...50).contains(limit) else {
-            throw AssistantError.invalidArgument("limit must be between 1 and 50.")
+            throw LibraryError.invalidArgument("limit must be between 1 and 50.")
         }
-        let notes = try state.searchNotes(args.string("query") ?? "", limit: limit)
+        let notes = try library.searchNotes(args.string("query") ?? "", limit: limit)
         return ["notes": .array(notes.map { note in
             [
                 "id": .string(note.id.uuidString),
@@ -144,7 +144,10 @@ final class AssistantTools {
     }
 
     private func readNote(_ args: Arguments) throws -> JSONValue {
-        let note = try state.note(id: args.requiredUUID("id"))
+        let id = try args.requiredUUID("id")
+        guard let note = try library.note(id: id), !note.isBlank else {
+            throw LibraryError.notFound("No note has id \(id.uuidString). Call search_notes to find notes.")
+        }
         return [
             "id": .string(note.id.uuidString),
             "title": .string(note.displayTitle),
@@ -167,11 +170,11 @@ final class AssistantTools {
     }
 
     private func dayPayload(_ dayKey: String) -> JSONValue {
-        let today = state.dayKey
-        let calendar = state.calendar
+        let today = library.dayKey
+        let calendar = library.calendar
         var relative: JSONValue = .null
         for (offset, word) in [(0, "today"), (1, "tomorrow"), (-1, "yesterday")] {
-            if let date = calendar.date(byAdding: .day, value: offset, to: state.now()),
+            if let date = calendar.date(byAdding: .day, value: offset, to: library.now()),
                DayKey.make(for: date, calendar: calendar) == dayKey {
                 relative = .string(word)
             }
@@ -223,7 +226,7 @@ final class AssistantTools {
         Definition(
             name: "list_tasks",
             title: "List Tasks",
-            description: "Lists the user's tasks for one day in their chosen order, with completion state. Use this before changing tasks to get current ids.",
+            description: "Lists the user's tasks for one day in their chosen order, with completion library. Use this before changing tasks to get current ids.",
             inputSchema: object(["date": dateProperty], required: []),
             outputSchema: object(dayProperties.merging([
                 "tasks": ["type": "array", "items": taskSchema],
@@ -239,7 +242,7 @@ final class AssistantTools {
             inputSchema: object([
                 "tasks": [
                     "type": "array",
-                    "items": ["type": "string", "minLength": 1, "maxLength": .int(AppState.maxTaskLength)],
+                    "items": ["type": "string", "minLength": 1, "maxLength": .int(Library.maxTaskLength)],
                     "minItems": 1,
                     "maxItems": 50,
                     "description": "Short task texts, in the user's words.",
@@ -269,7 +272,7 @@ final class AssistantTools {
             description: "Replaces a task's text.",
             inputSchema: object([
                 "id": idProperty,
-                "text": ["type": "string", "minLength": 1, "maxLength": .int(AppState.maxTaskLength)],
+                "text": ["type": "string", "minLength": 1, "maxLength": .int(Library.maxTaskLength)],
             ], required: ["id", "text"]),
             outputSchema: object(["task": taskSchema], required: ["task"]),
             readOnly: false, destructive: false, idempotent: true
@@ -338,22 +341,22 @@ private struct Arguments {
 
     func string(_ key: String) throws -> String? {
         guard let value = values[key], value != .null else { return nil }
-        guard let string = value.stringValue else { throw AssistantError.invalidArgument("\(key) must be a string.") }
+        guard let string = value.stringValue else { throw LibraryError.invalidArgument("\(key) must be a string.") }
         return string
     }
 
     func requiredString(_ key: String) throws -> String {
-        guard let string = try string(key) else { throw AssistantError.invalidArgument("\(key) is required.") }
+        guard let string = try string(key) else { throw LibraryError.invalidArgument("\(key) is required.") }
         return string
     }
 
     func requiredStrings(_ key: String) throws -> [String] {
         guard let array = values[key]?.arrayValue else {
-            throw AssistantError.invalidArgument("\(key) must be an array of strings.")
+            throw LibraryError.invalidArgument("\(key) must be an array of strings.")
         }
         return try array.map { element in
             guard let string = element.stringValue else {
-                throw AssistantError.invalidArgument("\(key) must contain only strings.")
+                throw LibraryError.invalidArgument("\(key) must contain only strings.")
             }
             return string
         }
@@ -361,18 +364,18 @@ private struct Arguments {
 
     func int(_ key: String) throws -> Int? {
         guard let value = values[key], value != .null else { return nil }
-        guard let int = value.intValue else { throw AssistantError.invalidArgument("\(key) must be an integer.") }
+        guard let int = value.intValue else { throw LibraryError.invalidArgument("\(key) must be an integer.") }
         return int
     }
 
     func requiredInt(_ key: String) throws -> Int {
-        guard let int = try int(key) else { throw AssistantError.invalidArgument("\(key) is required.") }
+        guard let int = try int(key) else { throw LibraryError.invalidArgument("\(key) is required.") }
         return int
     }
 
     func requiredBool(_ key: String) throws -> Bool {
         guard let bool = values[key]?.boolValue else {
-            throw AssistantError.invalidArgument("\(key) must be true or false.")
+            throw LibraryError.invalidArgument("\(key) must be true or false.")
         }
         return bool
     }
@@ -380,7 +383,7 @@ private struct Arguments {
     func requiredUUID(_ key: String) throws -> UUID {
         let string = try requiredString(key)
         guard let id = UUID(uuidString: string) else {
-            throw AssistantError.invalidArgument("\(key) must be an id returned by littlelog.")
+            throw LibraryError.invalidArgument("\(key) must be an id returned by littlelog.")
         }
         return id
     }

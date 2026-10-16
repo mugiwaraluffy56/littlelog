@@ -144,7 +144,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
-        state.undoManager
+        state.library.undoManager
     }
 
     // MARK: Setup
@@ -177,6 +177,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func installContent(container: ModelContainer, approvals: AccessApprovals) {
         let root = RootView()
             .environment(state)
+            .environment(state.library)
             .environment(approvals)
             .modelContainer(container)
         let hosting = NSHostingController(rootView: root)

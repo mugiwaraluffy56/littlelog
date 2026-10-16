@@ -22,7 +22,7 @@ final class AssistantAccess {
     private let defaults: UserDefaults
 
     init(
-        state: AppState,
+        library: Library,
         approvals: AccessApprovals,
         oauthStore: OAuthStore = OAuthStore(url: OAuthStore.defaultURL),
         identity: DeviceIdentity? = nil,
@@ -31,7 +31,7 @@ final class AssistantAccess {
         let identity = try identity ?? DeviceIdentity.loadOrCreate()
         let base = Self.relayBase(defaults)
         guard let connectURL = Self.connectURL(for: base) else {
-            throw AssistantError.invalidArgument("The relay address \(base) must be an https:// URL")
+            throw LibraryError.invalidArgument("The relay address \(base) must be an https:// URL")
         }
         self.oauthStore = oauthStore
         self.defaults = defaults
@@ -40,7 +40,7 @@ final class AssistantAccess {
         let oauth = OAuthEndpoints(store: oauthStore) { appName, returnHost in
             await approvals.requestApproval(appName: appName, returnHost: returnHost)
         }
-        let mcp = MCPServer(state: state, oauth: oauth)
+        let mcp = MCPServer(library: library, oauth: oauth)
         relay = RelayClient(connectURL: connectURL, identity: identity) { request in
             await mcp.respond(to: request)
         }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NoteEditorView: View {
     @Environment(AppState.self) private var state
+    @Environment(Library.self) private var library
     @Bindable var note: Note
     var focus: FocusState<FocusTarget?>.Binding
 
@@ -57,7 +58,7 @@ struct NoteEditorView: View {
                 .help("Delete Note")
             }
         }
-        .onChange(of: note.title) { state.noteDidChange(note) }
-        .onChange(of: note.content) { state.noteDidChange(note) }
+        .onChange(of: note.title) { library.noteDidChange(note) }
+        .onChange(of: note.content) { library.noteDidChange(note) }
     }
 }

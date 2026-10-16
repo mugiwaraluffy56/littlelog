@@ -13,10 +13,10 @@ struct OAuthTests {
 
     private func makeServer(approve: Bool = true) throws -> (MCPServer, OAuthStore) {
         let container = try Persistence.makeInMemoryContainer()
-        let state = AppState(context: container.mainContext)
+        let library = Library(context: container.mainContext)
         let store = OAuthStore(url: nil)
         let oauth = OAuthEndpoints(store: store) { _, _ in approve }
-        return (MCPServer(state: state, oauth: oauth), store)
+        return (MCPServer(library: library, oauth: oauth), store)
     }
 
     private func request(_ method: String, _ target: String, body: Data = Data(), headers: [String: String] = [:]) -> HTTPRequest {

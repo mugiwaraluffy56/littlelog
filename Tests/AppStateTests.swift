@@ -13,6 +13,7 @@ struct AppStateTests {
 
     private let container: ModelContainer
     private let clock: Clock
+    private let library: Library
     private let state: AppState
 
     init() throws {
@@ -21,7 +22,8 @@ struct AppStateTests {
         calendar.timeZone = try #require(TimeZone(identifier: "Asia/Kolkata"))
         let clock = Clock(try #require(ISO8601DateFormatter().date(from: "2026-10-16T06:00:00Z")))
         self.clock = clock
-        state = AppState(context: container.mainContext, calendar: calendar, now: { clock.now })
+        library = Library(context: container.mainContext, calendar: calendar, now: { clock.now })
+        state = AppState(library: library)
     }
 
     private func notes() throws -> [Note] {
@@ -54,7 +56,7 @@ struct AppStateTests {
         state.newNote()
         let note = try #require(state.openNote)
         note.content = "an idea"
-        state.noteDidChange(note)
+        library.noteDidChange(note)
         state.closeEditor()
         #expect(try notes().map(\.content) == ["an idea"])
         #expect(state.highlightedNoteID == nil)
@@ -69,13 +71,13 @@ struct AppStateTests {
         #expect(state.openNote == nil)
         #expect(try notes().isEmpty)
 
-        #expect(state.undoManager.canUndo)
-        state.undoManager.undo()
+        #expect(library.undoManager.canUndo)
+        library.undoManager.undo()
         let restored = try notes()
         #expect(restored.map(\.id) == [id])
         #expect(restored.first?.title == "keep me")
 
-        state.undoManager.redo()
+        library.undoManager.redo()
         #expect(try notes().isEmpty)
     }
 
@@ -84,7 +86,7 @@ struct AppStateTests {
         context.insert(Note(title: "  ", content: "\n"))
         context.insert(Note(title: "real"))
         try context.save()
-        state.purgeBlankNotes()
+        library.purgeBlankNotes()
         #expect(try notes().map(\.title) == ["real"])
     }
 
@@ -145,11 +147,11 @@ struct AppStateTests {
             state.newTaskDraft = text
             state.addTask()
         }
-        state.moveTasks(try tasks(on: "2026-10-16"), from: [2], to: 0)
+        library.moveTasks(try tasks(on: "2026-10-16"), from: [2], to: 0)
         #expect(try tasks(on: "2026-10-16").map(\.text) == ["c", "a", "b"])
 
         let b = try #require(try tasks(on: "2026-10-16").last)
-        state.toggle(b)
+        library.toggle(b)
         let after = try tasks(on: "2026-10-16")
         #expect(after.map(\.text) == ["c", "a", "b"])
         #expect(after.last?.isCompleted == true)
@@ -169,21 +171,21 @@ struct AppStateTests {
         state.newTaskDraft = "write documentation"
         state.addTask()
         let task = try #require(try tasks(on: "2026-10-16").first)
-        state.deleteTask(task)
+        library.removeTaskReportingErrors(task)
         #expect(try tasks(on: "2026-10-16").isEmpty)
-        state.undoManager.undo()
+        library.undoManager.undo()
         #expect(try tasks(on: "2026-10-16").map(\.text) == ["write documentation"])
     }
 
     @Test func newDayShowsOnlyItsOwnTasksAndKeepsYesterday() throws {
         state.newTaskDraft = "yesterday's task"
         state.addTask()
-        #expect(state.dayKey == "2026-10-16")
+        #expect(library.dayKey == "2026-10-16")
 
         // 18:30 UTC is midnight in Kolkata.
         clock.now = try #require(ISO8601DateFormatter().date(from: "2026-10-16T18:30:00Z"))
-        state.refreshDay()
-        #expect(state.dayKey == "2026-10-17")
+        library.refreshDay()
+        #expect(library.dayKey == "2026-10-17")
         #expect(try tasks(on: "2026-10-17").isEmpty)
 
         state.newTaskDraft = "today's task"

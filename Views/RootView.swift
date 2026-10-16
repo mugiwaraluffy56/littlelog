@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(AppState.self) private var state
+    @Environment(Library.self) private var library
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focus: FocusTarget?
     @FocusState private var isSearchFocused: Bool
@@ -36,7 +37,7 @@ struct RootView: View {
         // The panel's glass runs under the toolbar instead of a separate dark toolbar strip.
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let message = state.errorMessage {
+            if let message = library.errorMessage {
                 ErrorFooter(message: message)
             }
         }

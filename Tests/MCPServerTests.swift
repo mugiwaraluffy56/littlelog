@@ -12,7 +12,7 @@ struct MCPServerTests {
     ]
 
     private let container: ModelContainer
-    private let state: AppState
+    private let library: Library
     private let server: MCPServer
     private let token: String
 
@@ -21,14 +21,14 @@ struct MCPServerTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "Asia/Kolkata"))
         let now = try #require(ISO8601DateFormatter().date(from: "2026-10-16T06:00:00Z"))
-        state = AppState(context: container.mainContext, calendar: calendar, now: { now })
+        library = Library(context: container.mainContext, calendar: calendar, now: { now })
         // A signed-in app, as if ChatGPT had completed the OAuth flow (covered in OAuthTests).
         let store = OAuthStore(url: nil)
         let verifier = "test-verifier-0123456789abcdefghijklmnopqrstuvwxyz"
         let client = try store.register(name: "ChatGPT", redirectURIs: ["https://chatgpt.com/callback"])
         let code = try store.issueCode(clientID: client.id, redirectURI: "https://chatgpt.com/callback", codeChallenge: OAuthStore.s256(verifier))
         token = try store.exchange(code: code, clientID: client.id, redirectURI: "https://chatgpt.com/callback", codeVerifier: verifier).accessToken
-        server = MCPServer(state: state, oauth: OAuthEndpoints(store: store) { _, _ in true })
+        server = MCPServer(library: library, oauth: OAuthEndpoints(store: store) { _, _ in true })
     }
 
     // MARK: Helpers
@@ -154,23 +154,22 @@ struct MCPServerTests {
         #expect(tasks.allSatisfy { $0["added_by"] == "assistant" })
         #expect(listed.structured["remaining"] == 2)
 
-        let stored = try state.tasks(on: "2026-10-16")
+        let stored = try library.tasks(on: "2026-10-16")
         #expect(stored.allSatisfy { $0.addedByAssistant })
     }
 
     @Test func addingIsIdempotentAndSkipsDuplicates() async throws {
-        state.newTaskDraft = "Buy milk"
-        state.addTask()
+        try library.addTask("Buy milk", on: library.dayKey)
         let result = try await call("add_tasks", ["tasks": ["buy  MILK", "Call mom", "call mom", "  "]])
         #expect(result.structured["added"]?.arrayValue?.map { $0["text"] } == ["Call mom"])
         #expect(result.structured["skipped"]?.arrayValue?.count == 3)
-        #expect(try state.tasks(on: "2026-10-16").map(\.text) == ["Buy milk", "Call mom"])
+        #expect(try library.tasks(on: "2026-10-16").map(\.text) == ["Buy milk", "Call mom"])
     }
 
     @Test func tasksForTomorrowAndExplicitDates() async throws {
         _ = try await call("add_tasks", ["tasks": ["Plan trip"], "date": "tomorrow"])
         _ = try await call("add_tasks", ["tasks": ["Dentist"], "date": "2026-10-20"])
-        #expect(try state.tasks(on: "2026-10-17").map(\.text) == ["Plan trip"])
+        #expect(try library.tasks(on: "2026-10-17").map(\.text) == ["Plan trip"])
         #expect(try await call("list_tasks", ["date": "2026-10-20"]).structured["tasks"]?.arrayValue?.count == 1)
         #expect(try await call("list_tasks").structured["tasks"]?.arrayValue?.isEmpty == true)
 
@@ -195,11 +194,11 @@ struct MCPServerTests {
 
         let deleted = try await call("delete_task", ["id": ids[0]])
         #expect(deleted.structured["deleted"]?["text"] == "a")
-        #expect(try state.tasks(on: "2026-10-16").map(\.text) == ["c", "b2"])
+        #expect(try library.tasks(on: "2026-10-16").map(\.text) == ["c", "b2"])
 
         // The user can undo an assistant's deletion from the panel.
-        state.undoManager.undo()
-        #expect(try state.tasks(on: "2026-10-16").count == 3)
+        library.undoManager.undo()
+        #expect(try library.tasks(on: "2026-10-16").count == 3)
     }
 
     @Test func badArgumentsComeBackAsToolErrors() async throws {

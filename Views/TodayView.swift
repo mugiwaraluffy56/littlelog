@@ -2,17 +2,18 @@ import SwiftData
 import SwiftUI
 
 struct TodayView: View {
-    @Environment(AppState.self) private var state
+    @Environment(Library.self) private var library
     var focus: FocusState<FocusTarget?>.Binding
 
     var body: some View {
-        TaskList(dayKey: state.dayKey, day: state.day, focus: focus)
-            .id(state.dayKey)
+        TaskList(dayKey: library.dayKey, day: library.day, focus: focus)
+            .id(library.dayKey)
     }
 }
 
 private struct TaskList: View {
     @Environment(AppState.self) private var state
+    @Environment(Library.self) private var library
     @Query private var tasks: [DailyTask]
     let day: Date
     var focus: FocusState<FocusTarget?>.Binding
@@ -45,16 +46,16 @@ private struct TaskList: View {
                         }
                         .onDrop(
                             of: [.plainText],
-                            delegate: TaskDropDelegate(target: task, tasks: tasks, draggingID: $draggingID, state: state)
+                            delegate: TaskDropDelegate(target: task, tasks: tasks, draggingID: $draggingID, library: library)
                         )
                         .contextMenu {
                             Button(task.isCompleted ? "Mark as Not Completed" : "Mark as Completed") {
-                                state.toggle(task)
+                                library.toggle(task)
                             }
                             Button("Edit") { state.beginEditing(task) }
                             Divider()
                             Button("Delete", systemImage: "trash", role: .destructive) {
-                                state.deleteTask(task)
+                                library.removeTaskReportingErrors(task)
                             }
                         }
                 }
@@ -93,14 +94,14 @@ private struct TaskDropDelegate: DropDelegate {
     let target: DailyTask
     let tasks: [DailyTask]
     @Binding var draggingID: UUID?
-    let state: AppState
+    let library: Library
 
     func dropEntered(info: DropInfo) {
         guard let draggingID, draggingID != target.id,
               let from = tasks.firstIndex(where: { $0.id == draggingID }),
               let to = tasks.firstIndex(where: { $0.id == target.id })
         else { return }
-        state.moveTasks(tasks, from: IndexSet(integer: from), to: to > from ? to + 1 : to)
+        library.moveTasks(tasks, from: IndexSet(integer: from), to: to > from ? to + 1 : to)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
@@ -120,6 +121,7 @@ private struct TaskDropDelegate: DropDelegate {
 /// A Reminders-style row: a circular completion toggle, then the task text (click to edit).
 private struct TaskRow: View {
     @Environment(AppState.self) private var state
+    @Environment(Library.self) private var library
     @Bindable var task: DailyTask
     var focus: FocusState<FocusTarget?>.Binding
 
@@ -127,7 +129,7 @@ private struct TaskRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: TaskMetrics.spacing) {
-            Toggle(task.text, isOn: Binding(get: { task.isCompleted }, set: { _ in state.toggle(task) }))
+            Toggle(task.text, isOn: Binding(get: { task.isCompleted }, set: { _ in library.toggle(task) }))
                 .toggleStyle(CircleToggleStyle())
                 .labelsHidden()
 
@@ -157,7 +159,7 @@ private struct TaskRow: View {
         }
         .padding(.vertical, TaskMetrics.rowPadding)
         .animation(Style.motion, value: task.isCompleted)
-        .onChange(of: task.text) { state.taskTextDidChange(task) }
+        .onChange(of: task.text) { library.taskDidChange(task) }
         .onChange(of: focus.wrappedValue) { _, newValue in
             if isEditing, newValue != .task(task.id) {
                 state.endEditingTask(restoreFocus: false)

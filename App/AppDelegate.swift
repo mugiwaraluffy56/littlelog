@@ -26,9 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let state = AppState(context: container.mainContext)
-        state.purgeBlankNotes()
-        state.startObservingDayChanges()
+        let library = Library(context: container.mainContext)
+        library.purgeBlankNotes()
+        library.startObservingDayChanges()
+        let state = AppState(library: library)
         self.state = state
 
         let approvals = AccessApprovals()
@@ -53,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         var assistantSetupError: String?
         do {
-            let assistant = try AssistantAccess(state: state, approvals: approvals)
+            let assistant = try AssistantAccess(library: library, approvals: approvals)
             assistant.startIfEnabled()
             self.assistant = assistant
         } catch {

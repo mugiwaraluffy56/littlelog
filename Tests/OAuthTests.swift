@@ -6,35 +6,27 @@ import Testing
 /// → token exchange with PKCE → MCP calls with the access token → refresh.
 @MainActor
 struct OAuthTests {
-    private let publicHost = "littlelog.ngrok-free.app"
+    /// This Mac's public address through the relay.
+    private let publicBase = "relay.example/d/0123456789abcdef0123456789abcdef"
     private let redirect = "https://chatgpt.com/connector_platform_oauth_redirect"
     private let verifier = "verifier-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFG"
-    private var approvals: [(String, String)] = []
 
     private func makeServer(approve: Bool = true) throws -> (MCPServer, OAuthStore) {
         let container = try Persistence.makeInMemoryContainer()
         let state = AppState(context: container.mainContext)
         let store = OAuthStore(url: nil)
         let oauth = OAuthEndpoints(store: store) { _, _ in approve }
-        return (MCPServer(state: state, token: { "static-token-not-used-by-chatgpt-0123456789" }, oauth: oauth), store)
+        return (MCPServer(state: state, oauth: oauth), store)
     }
 
-    private func request(
-        _ method: String,
-        _ target: String,
-        body: Data = Data(),
-        headers: [String: String] = [:],
-        viaTunnel: Bool = true
-    ) -> HTTPRequest {
+    private func request(_ method: String, _ target: String, body: Data = Data(), headers: [String: String] = [:]) -> HTTPRequest {
         let parts = target.split(separator: "?", maxSplits: 1)
-        var all = ["host": viaTunnel ? publicHost : "127.0.0.1:48177"]
-        if viaTunnel { all["x-forwarded-proto"] = "https" }
+        var all = MCPServerTests.relayHeaders
         all.merge(headers) { _, new in new }
         return HTTPRequest(
             method: method,
             path: String(parts[0]),
-            query: parts.count > 1 ? HTTPParser.formDecode(String(parts[1])) : [:],
-            version: "HTTP/1.1",
+            query: parts.count > 1 ? FormEncoding.decode(String(parts[1])) : [:],
             headers: all,
             body: body
         )
@@ -96,18 +88,18 @@ struct OAuthTests {
         let (server, _) = try makeServer()
         let response = await server.respond(to: request("POST", "/mcp", body: Data("{}".utf8), headers: ["content-type": "application/json"]))
         #expect(response.status == 401)
-        #expect(response.headers["WWW-Authenticate"]?.contains("resource_metadata=\"https://\(publicHost)/.well-known/oauth-protected-resource\"") == true)
+        #expect(response.headers["WWW-Authenticate"]?.contains("resource_metadata=\"https://\(publicBase)/.well-known/oauth-protected-resource\"") == true)
     }
 
     @Test func discoveryDocumentsUseThePublicURL() async throws {
         let (server, _) = try makeServer()
         let resource = try JSONValue.decode(await server.respond(to: request("GET", "/.well-known/oauth-protected-resource")).body)
-        #expect(resource["resource"] == .string("https://\(publicHost)/mcp"))
-        #expect(resource["authorization_servers"] == [.string("https://\(publicHost)")])
+        #expect(resource["resource"] == .string("https://\(publicBase)/mcp"))
+        #expect(resource["authorization_servers"] == [.string("https://\(publicBase)")])
 
         let metadata = try JSONValue.decode(await server.respond(to: request("GET", "/.well-known/oauth-authorization-server")).body)
-        #expect(metadata["issuer"] == .string("https://\(publicHost)"))
-        #expect(metadata["registration_endpoint"] == .string("https://\(publicHost)/oauth/register"))
+        #expect(metadata["issuer"] == .string("https://\(publicBase)"))
+        #expect(metadata["registration_endpoint"] == .string("https://\(publicBase)/oauth/register"))
         #expect(metadata["code_challenge_methods_supported"] == ["S256"])
     }
 
@@ -184,11 +176,10 @@ struct OAuthTests {
         #expect(store.connectedClients.isEmpty)
     }
 
-    @Test func untrustedHostsAreRefused() async throws {
+    @Test func requestsNotFromTheRelayAreRefused() async throws {
         let (server, _) = try makeServer()
-        // A public host without a tunnel's forwarded-HTTPS marker (e.g. DNS rebinding).
-        let rebinding = HTTPRequest(method: "GET", path: "/.well-known/oauth-protected-resource", version: "HTTP/1.1", headers: ["host": "evil.example"], body: Data())
-        #expect(await server.respond(to: rebinding).status == 403)
+        let direct = HTTPRequest(method: "GET", path: "/.well-known/oauth-protected-resource", headers: ["host": "evil.example"], body: Data())
+        #expect(await server.respond(to: direct).status == 403)
     }
 
     @Test func persistsAcrossLaunches() async throws {

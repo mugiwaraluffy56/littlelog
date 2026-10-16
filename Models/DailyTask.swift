@@ -12,7 +12,7 @@ final class DailyTask {
     var position: Int
     var createdAt: Date
     var updatedAt: Date
-    /// Set when ChatGPT/Codex created the task over MCP. The default lets existing stores migrate.
+    /// Set when ChatGPT created the task over MCP. The default lets existing stores migrate.
     var addedByAssistant: Bool = false
 
     init(

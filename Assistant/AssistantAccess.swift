@@ -1,56 +1,49 @@
 import Foundation
-import OSLog
-import Security
 
-/// Owns the opt-in MCP endpoint: whether it's enabled, its access token, and the loopback server.
+/// The opt-in ChatGPT connection: while it's on, littlelog stays connected to the relay so
+/// ChatGPT can reach this Mac at `connectorURL`.
 final class AssistantAccess {
-    static let port: UInt16 = 48177
     static let enabledDefaultsKey = "assistantAccessEnabled"
-    static var endpoint: String { "http://127.0.0.1:\(port)\(MCPServer.endpointPath)" }
+    /// Lets a self-hosted relay replace the default (`defaults write dev.littlelog.app relayURL https://…`).
+    static let relayURLDefaultsKey = "relayURL"
+    static let defaultRelayURL = "https://littlelog-relay.littlelog-relay.workers.dev"
 
-    enum Status: Equatable {
-        case off
-        case starting
-        case running
-        case failed(String)
+    var status: RelayClient.Status { relay.status }
+    var onStatusChange: (() -> Void)? {
+        get { relay.onStatusChange }
+        set { relay.onStatusChange = newValue }
     }
 
-    private(set) var status: Status = .off
-    var onStatusChange: (() -> Void)?
+    /// What the user pastes into ChatGPT → Plugins → Add custom MCP server.
+    let connectorURL: String
 
-    private let mcp: MCPServer
-    private let tokenStore: AccessTokenStore
+    private let relay: RelayClient
     private let oauthStore: OAuthStore
     private let defaults: UserDefaults
-    private var server: LocalHTTPServer?
-    private(set) var token: String
 
     init(
         state: AppState,
         approvals: AccessApprovals,
-        tokenStore: AccessTokenStore = AccessTokenStore(),
         oauthStore: OAuthStore = OAuthStore(url: OAuthStore.defaultURL),
+        identity: DeviceIdentity? = nil,
         defaults: UserDefaults = .standard
     ) throws {
-        self.tokenStore = tokenStore
+        let identity = try identity ?? DeviceIdentity.loadOrCreate()
+        let base = Self.relayBase(defaults)
+        guard let connectURL = Self.connectURL(for: base) else {
+            throw AssistantError.invalidArgument("The relay address \(base) must be an https:// URL")
+        }
         self.oauthStore = oauthStore
         self.defaults = defaults
-        let token = try tokenStore.loadOrCreate()
-        self.token = token
-        // The MCP server reads the token through this box, so a reset applies to the next request.
-        let box = TokenBox(token)
-        tokenBox = box
+        connectorURL = "\(base)/d/\(identity.id)\(MCPServer.endpointPath)"
+
         let oauth = OAuthEndpoints(store: oauthStore) { appName, returnHost in
             await approvals.requestApproval(appName: appName, returnHost: returnHost)
         }
-        mcp = MCPServer(state: state, token: { box.value }, oauth: oauth)
-    }
-
-    private let tokenBox: TokenBox
-
-    /// Apps signed in through OAuth (ChatGPT on the web), oldest first.
-    var connectedAppNames: [String] {
-        oauthStore.connectedClients.map(\.name)
+        let mcp = MCPServer(state: state, oauth: oauth)
+        relay = RelayClient(connectURL: connectURL, identity: identity) { request in
+            await mcp.respond(to: request)
+        }
     }
 
     var isEnabled: Bool {
@@ -58,143 +51,39 @@ final class AssistantAccess {
     }
 
     func startIfEnabled() {
-        if isEnabled { start() }
+        if isEnabled { relay.start() }
     }
 
     func setEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: Self.enabledDefaultsKey)
-        enabled ? start() : stop()
+        enabled ? relay.start() : relay.stop()
     }
 
-    /// Signs out every app: replaces the static token and revokes all OAuth sign-ins.
+    /// Apps signed in to littlelog, oldest first.
+    var connectedAppNames: [String] {
+        oauthStore.connectedClients.map(\.name)
+    }
+
+    /// Signs out every app; ChatGPT has to sign in (and be allowed) again.
     func disconnectAll() throws {
         try oauthStore.revokeAll()
-        token = try tokenStore.replace()
-        tokenBox.value = token
     }
 
-    // MARK: Server
-
-    private func start() {
-        guard server == nil else { return }
-        let mcp = self.mcp
-        let server = LocalHTTPServer(port: Self.port) { request in
-            await mcp.respond(to: request)
+    /// `https` becomes `wss`. Plain `http` is accepted only for a relay running on this Mac (development).
+    static func connectURL(for base: String) -> URL? {
+        guard var components = URLComponents(string: base), let host = components.host?.lowercased() else { return nil }
+        switch components.scheme?.lowercased() {
+        case "https": components.scheme = "wss"
+        case "http" where ["127.0.0.1", "localhost"].contains(host): components.scheme = "ws"
+        default: return nil
         }
-        update(.starting)
-        do {
-            try server.start { [weak self] state in
-                Task { @MainActor in self?.serverStateChanged(state) }
-            }
-            self.server = server
-        } catch {
-            Logger.app.error("assistant server failed to start: \(error.localizedDescription, privacy: .public)")
-            update(.failed(error.localizedDescription))
-        }
+        components.path += "/connect"
+        return components.url
     }
 
-    private func stop() {
-        server?.stop()
-        server = nil
-        update(.off)
-    }
-
-    private func serverStateChanged(_ state: LocalHTTPServer.State) {
-        switch state {
-        case .ready:
-            update(.running)
-        case .failed(let message):
-            Logger.app.error("assistant server failed: \(message, privacy: .public)")
-            server = nil
-            update(.failed(message))
-        case .stopped:
-            if case .failed = status { return }
-            if server == nil { update(.off) }
-        }
-    }
-
-    private func update(_ status: Status) {
-        guard self.status != status else { return }
-        self.status = status
-        onStatusChange?()
-    }
-
-    // MARK: Client setup
-
-    /// The block for `~/.codex/config.toml`, shared by the Codex CLI and the ChatGPT desktop app.
-    var codexConfigBlock: String {
-        """
-        [mcp_servers.littlelog]
-        url = "\(Self.endpoint)"
-        http_headers = { Authorization = "Bearer \(token)" }
-
-        [mcp_servers.littlelog.tools.delete_task]
-        approval_mode = "prompt"
-        """
-    }
-
-    /// Gives littlelog a public HTTPS address for ChatGPT on the web and phone. ngrok's free plan
-    /// includes one permanent domain, used automatically. Every request through it still needs
-    /// a sign-in that was approved on this Mac.
-    static let ngrokCommand = "ngrok http \(port)"
-}
-
-/// Mutable holder so the server closure sees token resets without being rebuilt.
-private final class TokenBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: String
-
-    init(_ value: String) {
-        stored = value
-    }
-
-    var value: String {
-        get { lock.withLock { stored } }
-        set { lock.withLock { stored = newValue } }
-    }
-}
-
-/// Stores the access token in the app's sandbox container, next to the notes database and
-/// readable only by this user (0600). Keychain items for ad-hoc signed builds re-prompt after
-/// every rebuild, which would break unattended assistant access.
-struct AccessTokenStore {
-    let url: URL
-
-    init(url: URL? = nil) {
-        self.url = url ?? URL.applicationSupportDirectory
-            .appending(path: "littlelog", directoryHint: .isDirectory)
-            .appending(path: "assistant-token", directoryHint: .notDirectory)
-    }
-
-    func loadOrCreate() throws -> String {
-        if let data = try? Data(contentsOf: url),
-           let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           token.count >= 32 {
-            return token
-        }
-        return try replace()
-    }
-
-    func replace() throws -> String {
-        let token = try Self.generate()
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(token.utf8).write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path(percentEncoded: false))
-        return token
-    }
-
-    /// 32 random bytes, base64url without padding.
-    nonisolated static func generate() throws -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        guard status == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [
-                NSLocalizedDescriptionKey: "Couldn't generate a secure access token.",
-            ])
-        }
-        return Data(bytes).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
+    private static func relayBase(_ defaults: UserDefaults) -> String {
+        let configured = defaults.string(forKey: relayURLDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = (configured?.isEmpty == false ? configured : nil) ?? defaultRelayURL
+        return base.hasSuffix("/") ? String(base.dropLast()) : base
     }
 }

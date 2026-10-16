@@ -121,7 +121,7 @@ final class OAuthEndpoints {
     // MARK: Tokens
 
     private func token(_ request: HTTPRequest) -> HTTPResponse {
-        let form = HTTPParser.formDecode(String(decoding: request.body, as: UTF8.self))
+        let form = FormEncoding.decode(String(decoding: request.body, as: UTF8.self))
         guard let clientID = form["client_id"], store.client(id: clientID) != nil else {
             return Self.oauthError("invalid_client", "Unknown client_id", status: 401)
         }

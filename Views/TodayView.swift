@@ -146,7 +146,7 @@ private struct TaskRow: View {
                         Image(systemName: "sparkle")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                            .help("Added by ChatGPT or Codex")
+                            .help("Added by ChatGPT")
                             .accessibilityLabel("Added by assistant")
                     }
                 }

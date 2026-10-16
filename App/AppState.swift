@@ -25,7 +25,7 @@ struct FocusRequest: Equatable {
 }
 
 extension Logger {
-    static let app = Logger(subsystem: "dev.littlelog.app", category: "app")
+    nonisolated static let app = Logger(subsystem: "dev.littlelog.app", category: "app")
 }
 
 /// All UI state and every mutation of the library. Lives for the whole app session,

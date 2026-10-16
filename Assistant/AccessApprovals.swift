@@ -3,7 +3,7 @@ import Observation
 
 /// "ChatGPT wants to use littlelog" — the one-time approval step of the sign-in flow.
 /// The request shows in the littlelog panel on the Mac, so only someone at this Mac can approve,
-/// even though the sign-in page itself is reachable through the public tunnel.
+/// even though the sign-in page itself is reachable through the relay.
 @Observable
 final class AccessApprovals {
     struct Request: Identifiable, Equatable {

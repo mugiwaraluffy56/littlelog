@@ -9,22 +9,17 @@ final class MCPServer {
 
     private let tools: AssistantTools
     private let state: AppState
-    private let token: () -> String
     private let oauth: OAuthEndpoints
 
-    /// - Parameters:
-    ///   - token: the static token for local clients configured by hand (Codex, the tunnel).
-    ///   - oauth: sign-in for clients that can only do OAuth (ChatGPT on the web).
-    init(state: AppState, token: @escaping () -> String, oauth: OAuthEndpoints) {
+    init(state: AppState, oauth: OAuthEndpoints) {
         self.state = state
         self.tools = AssistantTools(state: state)
-        self.token = token
         self.oauth = oauth
     }
 
     func respond(to request: HTTPRequest) async -> HTTPResponse {
         guard let base = Self.baseURL(for: request) else {
-            return .text("Host not allowed", status: 403)
+            return .text("Requests must come through the littlelog relay", status: 403)
         }
         if let response = await oauth.respond(to: request, baseURL: base) {
             return response
@@ -32,11 +27,8 @@ final class MCPServer {
         guard request.path == Self.endpointPath else {
             return .text("Not found", status: 404)
         }
-        // Browsers on other origins (DNS rebinding, malicious pages) are refused outright.
-        if let origin = request.header("origin"), !Self.isLoopback(originHost(origin)) {
-            return .text("Origin not allowed", status: 403)
-        }
-        guard isAuthorized(request.header("authorization")) else {
+        // Every MCP call needs a sign-in that was approved on this Mac.
+        guard let token = Self.bearerToken(request.header("authorization")), oauth.store.isValidAccessToken(token) else {
             return .text("Missing or invalid access token", status: 401, headers: [
                 "WWW-Authenticate": "Bearer realm=\"littlelog\", resource_metadata=\"\(base)/.well-known/oauth-protected-resource\"",
             ])
@@ -146,59 +138,21 @@ final class MCPServer {
 
     // MARK: Request checks
 
-    private func originHost(_ origin: String) -> String? {
-        URLComponents(string: origin)?.host
-    }
-
-    nonisolated static func hostname(fromHostHeader host: String) -> String? {
-        let trimmed = host.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("[") {
-            return trimmed.firstIndex(of: "]").map { String(trimmed[...$0]) }
-        }
-        return trimmed.split(separator: ":", maxSplits: 1).first.map(String.init)
-    }
-
-    nonisolated static func isLoopback(_ host: String?) -> Bool {
-        guard let host = host?.lowercased() else { return false }
-        return ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host)
-    }
-
-    private func isAuthorized(_ header: String?) -> Bool {
-        guard let presented = Self.bearerToken(header) else { return false }
-        return Self.constantTimeEquals(presented, token()) || oauth.store.isValidAccessToken(presented)
-    }
-
     nonisolated static func bearerToken(_ header: String?) -> String? {
         guard let header, header.lowercased().hasPrefix("bearer ") else { return nil }
         let token = header.dropFirst("bearer ".count).trimmingCharacters(in: .whitespaces)
         return token.isEmpty ? nil : token
     }
 
-    /// The public base URL of this request: loopback hosts as-is, or a tunnel's HTTPS host.
-    /// Other hosts are refused, so a DNS-rebinding name pointed at 127.0.0.1 gets nowhere.
+    /// This Mac's public address, e.g. `https://relay.example/d/<device>`, from the relay's
+    /// forwarding headers. Requests without them didn't come through the relay and are refused.
     nonisolated static func baseURL(for request: HTTPRequest) -> String? {
-        guard let host = request.header("host")?.trimmingCharacters(in: .whitespaces), !host.isEmpty else {
-            return nil
-        }
-        if isLoopback(hostname(fromHostHeader: host)) {
-            return "http://\(host)"
-        }
-        // Tunnels (ngrok, cloudflared, OpenAI's tunnel) mark forwarded HTTPS traffic. Browsers
-        // can't set this header cross-origin without a preflight, which this server never allows.
-        guard request.header("x-forwarded-proto")?.lowercased().split(separator: ",").first?
-            .trimmingCharacters(in: .whitespaces) == "https"
+        guard request.header("x-forwarded-proto") == "https",
+              let host = request.header("host")?.trimmingCharacters(in: .whitespaces), !host.isEmpty,
+              !host.contains("/")
         else { return nil }
-        return "https://\(host)"
-    }
-
-    nonisolated static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
-        let a = Array(lhs.utf8)
-        let b = Array(rhs.utf8)
-        guard a.count == b.count, !a.isEmpty else { return false }
-        var difference: UInt8 = 0
-        for index in a.indices {
-            difference |= a[index] ^ b[index]
-        }
-        return difference == 0
+        let prefix = request.header("x-forwarded-prefix") ?? ""
+        guard prefix.isEmpty || prefix.wholeMatch(of: /\/d\/[0-9a-f]{32}/) != nil else { return nil }
+        return "https://\(host)\(prefix)"
     }
 }

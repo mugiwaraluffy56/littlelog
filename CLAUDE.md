@@ -15,7 +15,7 @@ Tests use Swift Testing (`import Testing`) and are hosted in the app; `AppDelega
 
 ## Architecture
 
-Pure Swift: AppKit shell + SwiftUI content + SwiftData. No Rust, no packages. Entitlements: App Sandbox, `network.server` (loopback MCP), `files.user-selected.read-write` (Codex config setup). Swift 6 with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` — pure helpers that must run off the main actor (e.g. `DayKey`, `String.isBlankText`) are marked `nonisolated`.
+Pure Swift: AppKit shell + SwiftUI content + SwiftData. No Rust, no packages. Entitlements: App Sandbox + `network.client` (relay connection) only. Swift 6 with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` — pure helpers that must run off the main actor (e.g. `DayKey`, `String.isBlankText`) are marked `nonisolated`.
 
 Sources sit in root folders (`App/`, `Assistant/`, `Models/`, `Views/`, `Resources/`), tests in `Tests/` — keep it flat; the user dislikes nested `littlelog/…` folders.
 
@@ -27,16 +27,16 @@ Sources sit in root folders (`App/`, `Assistant/`, `Models/`, `Views/`, `Resourc
 - Today filtering: tasks carry a `dateKey` (`yyyy-MM-dd` local day via `DayKey`); `AppState.dayKey` refreshes on panel show and on day/time-zone/clock-change notifications (no timers).
 - `App/StatusMenuController` — menu bar item, rebuilt on every open (`menuNeedsUpdate`): open panel, assistant access, Open at Login (`SMAppService`), quit.
 
-### Assistant access (MCP) — `Assistant/`
+### ChatGPT access (MCP) — `Assistant/` and `relay/`
 
-ChatGPT/Codex talk to littlelog over MCP. The MCP layer is written in-house (the official Swift SDK pulls in SwiftNIO etc.); it implements only what's needed, to spec 2025-11-25. Web ChatGPT is the user's top priority.
-- `LocalHTTPServer` — `nonisolated`, Network.framework, bound to `127.0.0.1:48177` (`requiredInterfaceType = .loopback`), strict HTTP/1.1 parser in `HTTP.swift` (Content-Length only, size limits, keep-alive).
-- `MCPServer` (MainActor) — stateless Streamable HTTP: POST → one JSON-RPC message → one `application/json` reply; GET/DELETE → 405; notifications → 202. `baseURL(for:)` accepts loopback hosts, or a public host only when a tunnel marks it `X-Forwarded-Proto: https` (DNS-rebinding guard). `/mcp` then checks Origin, bearer token (static token, constant-time, *or* an OAuth access token), method, `MCP-Protocol-Version`, Content-Type; a 401 carries `resource_metadata` so ChatGPT can discover sign-in.
-- OAuth for ChatGPT web (it can't send custom headers): `OAuthEndpoints` serves RFC 9728/8414 metadata, DCR (`/oauth/register`), `/oauth/authorize` (waits on `AccessApprovals` — Allow/Don't Allow banner in the panel, which pops open; 90 s timeout) and `/oauth/token` (code + PKCE S256, rotating refresh tokens). `OAuthStore` persists clients and SHA-256-hashed tokens in `Application Support/littlelog/oauth.json`. Public address comes from the user's `ngrok http 48177`.
-- `AssistantTools` — tool definitions (schemas, `outputSchema`, read-only/destructive annotations) and execution. Argument/lookup/save problems return `isError: true` tool results, not JSON-RPC errors. Notes are read-only by design.
-- `AppState+Assistant` — the operations; they reuse `AppState` (`insertTask`, `removeTask` with undo, `commit()` which throws) so assistant edits show live in the panel. `add_tasks` dedupes against the day's list (case/diacritic-insensitive) so retries are idempotent. Assistant-created tasks set `DailyTask.addedByAssistant` (shown as ✦).
-- `AssistantAccess` — opt-in flag (`UserDefaults` `assistantAccessEnabled`), token in the container at `Application Support/littlelog/assistant-token` (0600; not Keychain because ad-hoc rebuilds re-prompt), Codex config block and the ngrok command. `CodexConfig` merges into `~/.codex/config.toml` replacing only `[mcp_servers.littlelog*]` tables; the sandbox writes it via a user-picked NSOpenPanel URL (`files.user-selected.read-write`), in place (not atomic).
-- Manual check against the running app: token from the file above, then `xh POST http://127.0.0.1:48177/mcp "Authorization:Bearer $TOKEN" jsonrpc=2.0 id:=1 method=tools/list`. Validate Codex config parsing with a throwaway `CODEX_HOME=<tmp> codex mcp list` — never edit the user's real `~/.codex` from the shell.
+Web ChatGPT is the user's top priority (not Codex). ChatGPT can only reach internet servers, so `relay/` (a Cloudflare Worker + one Durable Object per Mac) forwards `https://<relay>/d/<device>/…` to the Mac over a WebSocket the app keeps open; the relay stores only a hash of the device secret. The MCP layer is written in-house (the official Swift SDK pulls in SwiftNIO etc.), to spec 2025-11-25. No local listener, no ngrok, no static tokens.
+- `RelayClient` — `@MainActor`, `URLSessionWebSocketTask` to `wss://<relay>/connect` with the `DeviceIdentity` (id + secret in `Application Support/littlelog/relay-device.json`, 0600). Frames are `RelayRequestFrame`/`RelayResponseFrame` JSON (base64 bodies); requests are answered concurrently. Pings every 25 s, backoff 1→60 s, reconnects on wake. The wire format must stay in sync with `relay/src/index.ts`.
+- `MCPServer` (MainActor) — stateless Streamable HTTP: POST → one JSON-RPC message → one `application/json` reply; GET → 405; notifications → 202. `baseURL(for:)` builds `https://<host><x-forwarded-prefix>` and refuses requests without the relay's headers. `/mcp` requires an OAuth access token; a 401 carries `resource_metadata` so ChatGPT finds sign-in.
+- OAuth (ChatGPT can't send custom headers): `OAuthEndpoints` serves RFC 9728/8414 metadata (the relay also routes path-inserted `/.well-known/<x>/d/<device>`), DCR (`/oauth/register`), `/oauth/authorize` (waits on `AccessApprovals` — Allow/Don't Allow banner in the panel, which pops open; 90 s timeout, relay waits 100 s) and `/oauth/token` (code + PKCE S256, rotating refresh). `OAuthStore` persists clients and SHA-256-hashed tokens in `Application Support/littlelog/oauth.json`.
+- `AssistantTools` — tool definitions (schemas, `outputSchema`, read-only/destructive annotations) and execution. Argument/lookup/save problems return `isError: true` tool results. Notes are read-only by design.
+- `AppState+Assistant` — the operations; they reuse `AppState` (`insertTask`, `removeTask` with undo, throwing `commit()`) so ChatGPT's edits show live in the panel. `add_tasks` dedupes against the day's list so retries are idempotent. Tasks it creates set `DailyTask.addedByAssistant` (✦).
+- `AssistantAccess` — opt-in flag (`assistantAccessEnabled`), connector URL, relay URL (`relayURL` default overrides `defaultRelayURL`; plain `http` only for 127.0.0.1/localhost).
+- Relay dev loop: `cd relay && npx tsc --noEmit && npx wrangler dev --port 8799 --local`, then `defaults write ~/Library/Containers/dev.littlelog.app/Data/Library/Preferences/dev.littlelog.app relayURL http://127.0.0.1:8799` and restart the app. Deploy with `npx wrangler deploy`.
 
 ## UI conventions
 

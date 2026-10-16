@@ -1,0 +1,15 @@
+{
+  "name": "littlelog-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261016.1",
+    "typescript": "7.0.2",
+    "wrangler": "4.151.1"
+  }
+}

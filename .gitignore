@@ -11,3 +11,7 @@ xcuserdata/
 
 # Generated from project.yml by `xcodegen generate`
 *.xcodeproj/
+
+# Relay (Cloudflare Worker)
+relay/node_modules/
+relay/.wrangler/

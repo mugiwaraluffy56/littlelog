@@ -5,10 +5,16 @@ import Testing
 
 @MainActor
 struct MCPServerTests {
-    private let token = "test-token-0123456789abcdefghijklmnopqrstuv"
+    static let relayHeaders = [
+        "host": "relay.example",
+        "x-forwarded-proto": "https",
+        "x-forwarded-prefix": "/d/0123456789abcdef0123456789abcdef",
+    ]
+
     private let container: ModelContainer
     private let state: AppState
     private let server: MCPServer
+    private let token: String
 
     init() throws {
         container = try Persistence.makeInMemoryContainer()
@@ -16,22 +22,27 @@ struct MCPServerTests {
         calendar.timeZone = try #require(TimeZone(identifier: "Asia/Kolkata"))
         let now = try #require(ISO8601DateFormatter().date(from: "2026-10-16T06:00:00Z"))
         state = AppState(context: container.mainContext, calendar: calendar, now: { now })
-        let token = self.token
-        let oauth = OAuthEndpoints(store: OAuthStore(url: nil)) { _, _ in true }
-        server = MCPServer(state: state, token: { token }, oauth: oauth)
+        // A signed-in app, as if ChatGPT had completed the OAuth flow (covered in OAuthTests).
+        let store = OAuthStore(url: nil)
+        let verifier = "test-verifier-0123456789abcdefghijklmnopqrstuvwxyz"
+        let client = try store.register(name: "ChatGPT", redirectURIs: ["https://chatgpt.com/callback"])
+        let code = try store.issueCode(clientID: client.id, redirectURI: "https://chatgpt.com/callback", codeChallenge: OAuthStore.s256(verifier))
+        token = try store.exchange(code: code, clientID: client.id, redirectURI: "https://chatgpt.com/callback", codeVerifier: verifier).accessToken
+        server = MCPServer(state: state, oauth: OAuthEndpoints(store: store) { _, _ in true })
     }
 
     // MARK: Helpers
 
+    private func request(_ method: String, _ path: String, body: Data = Data(), headers: [String: String] = [:]) -> HTTPRequest {
+        var all = Self.relayHeaders
+        all["content-type"] = "application/json"
+        all["authorization"] = "Bearer \(token)"
+        all.merge(headers) { _, new in new }
+        return HTTPRequest(method: method, path: path, headers: all.filter { !$0.value.isEmpty }, body: body)
+    }
+
     private func post(_ body: JSONValue, headers: [String: String] = [:]) async throws -> HTTPResponse {
-        var all = [
-            "host": "127.0.0.1:48177",
-            "content-type": "application/json",
-            "authorization": "Bearer \(token)",
-        ]
-        all.merge(headers.mapKeys { $0.lowercased() }) { _, new in new }
-        let request = HTTPRequest(method: "POST", path: "/mcp", version: "HTTP/1.1", headers: all, body: try body.encoded())
-        return await server.respond(to: request)
+        await server.respond(to: request("POST", "/mcp", body: try body.encoded(), headers: headers))
     }
 
     private func rpc(_ method: String, _ params: JSONValue = [:], id: JSONValue = 1) async throws -> JSONValue {
@@ -52,7 +63,7 @@ struct MCPServerTests {
         let reply = try await rpc("initialize", [
             "protocolVersion": "2025-06-18",
             "capabilities": [:],
-            "clientInfo": ["name": "codex", "version": "1"],
+            "clientInfo": ["name": "chatgpt", "version": "1"],
         ])
         #expect(reply["id"] == 1)
         let result = try #require(reply["result"])
@@ -97,12 +108,7 @@ struct MCPServerTests {
     }
 
     @Test func malformedJSONAndBatchesAreRejected() async throws {
-        let request = HTTPRequest(
-            method: "POST", path: "/mcp", version: "HTTP/1.1",
-            headers: ["host": "localhost:48177", "content-type": "application/json", "authorization": "Bearer \(token)"],
-            body: Data("{nope".utf8)
-        )
-        let parse = await server.respond(to: request)
+        let parse = await server.respond(to: request("POST", "/mcp", body: Data("{nope".utf8)))
         #expect(parse.status == 400)
         #expect(try JSONValue.decode(parse.body)["error"]?["code"] == -32700)
 
@@ -112,33 +118,26 @@ struct MCPServerTests {
 
     // MARK: Security
 
-    @Test func requiresTheBearerToken() async throws {
-        #expect(try await post(["jsonrpc": "2.0", "id": 1, "method": "ping"], headers: ["authorization": ""]).status == 401)
-        #expect(try await post(["jsonrpc": "2.0", "id": 1, "method": "ping"], headers: ["authorization": "Bearer wrong"]).status == 401)
-        #expect(try await post(["jsonrpc": "2.0", "id": 1, "method": "ping"], headers: ["authorization": "Bearer \(token)"]).status == 200)
+    @Test func requiresASignedInToken() async throws {
+        let ping: JSONValue = ["jsonrpc": "2.0", "id": 1, "method": "ping"]
+        let missing = try await post(ping, headers: ["authorization": ""])
+        #expect(missing.status == 401)
+        #expect(missing.headers["WWW-Authenticate"]?.contains("https://relay.example/d/0123456789abcdef0123456789abcdef/.well-known/oauth-protected-resource") == true)
+        #expect(try await post(ping, headers: ["authorization": "Bearer wrong"]).status == 401)
+        #expect(try await post(ping).status == 200)
     }
 
-    @Test func rejectsForeignOriginsAndHosts() async throws {
+    @Test func onlyRequestsThroughTheRelayAreServed() async throws {
         let ping: JSONValue = ["jsonrpc": "2.0", "id": 1, "method": "ping"]
-        #expect(try await post(ping, headers: ["origin": "https://evil.example"]).status == 403)
-        #expect(try await post(ping, headers: ["host": "evil.example:48177"]).status == 403)
-        #expect(try await post(ping, headers: ["origin": "http://localhost:3000"]).status == 200)
+        #expect(try await post(ping, headers: ["x-forwarded-proto": ""]).status == 403)
+        #expect(try await post(ping, headers: ["x-forwarded-prefix": "/d/../../evil"]).status == 403)
+        #expect(try await post(ping, headers: ["host": ""]).status == 403)
     }
 
     @Test func onlyPostOnTheMCPPath() async throws {
-        let base = ["host": "127.0.0.1:48177", "authorization": "Bearer \(token)"]
-        let get = await server.respond(to: HTTPRequest(method: "GET", path: "/mcp", version: "HTTP/1.1", headers: base, body: Data()))
-        #expect(get.status == 405)
-        let other = await server.respond(to: HTTPRequest(method: "POST", path: "/other", version: "HTTP/1.1", headers: base, body: Data()))
-        #expect(other.status == 404)
+        #expect(await server.respond(to: request("GET", "/mcp")).status == 405)
+        #expect(await server.respond(to: request("POST", "/other")).status == 404)
         #expect(try await post(["jsonrpc": "2.0", "id": 1, "method": "ping"], headers: ["mcp-protocol-version": "2000-01-01"]).status == 400)
-    }
-
-    @Test func constantTimeComparison() {
-        #expect(MCPServer.constantTimeEquals("abc", "abc"))
-        #expect(!MCPServer.constantTimeEquals("abc", "abd"))
-        #expect(!MCPServer.constantTimeEquals("abc", "abcd"))
-        #expect(!MCPServer.constantTimeEquals("", ""))
     }
 
     // MARK: Tools
@@ -236,11 +235,5 @@ struct MCPServerTests {
         #expect(content["type"] == "text")
         let text = try #require(content["text"]?.stringValue)
         #expect(try JSONValue.decode(Data(text.utf8))["date"] == "2026-10-16")
-    }
-}
-
-private extension Dictionary {
-    func mapKeys<T: Hashable>(_ transform: (Key) -> T) -> [T: Value] {
-        Dictionary<T, Value>(map { (transform($0.key), $0.value) }, uniquingKeysWith: { _, last in last })
     }
 }

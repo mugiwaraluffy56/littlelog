@@ -1,9 +1,8 @@
 import AppKit
 import OSLog
 import ServiceManagement
-import UniformTypeIdentifiers
 
-/// The menu bar item: open the panel, manage assistant (MCP) access, launch at login, quit.
+/// The menu bar item: open the panel, the ChatGPT connection, launch at login, quit.
 /// The menu is rebuilt each time it opens so every item reflects the current state.
 final class StatusMenuController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
@@ -44,7 +43,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(.sectionHeader(title: "ChatGPT & Codex"))
+        menu.addItem(.sectionHeader(title: "ChatGPT"))
         addAssistantItems(to: menu)
 
         menu.addItem(.separator())
@@ -61,31 +60,30 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
             menu.addItem(note("Unavailable: \(assistantSetupError ?? "unknown error")"))
             return
         }
-        let toggle = item("Allow Access", #selector(toggleAssistantAccess))
+        let toggle = item("Allow ChatGPT Access", #selector(toggleAssistantAccess))
         toggle.state = assistant.isEnabled ? .on : .off
         menu.addItem(toggle)
 
         switch assistant.status {
-        case .off:
-            menu.addItem(note("Lets ChatGPT and Codex read and add your tasks"))
+        case .stopped:
+            menu.addItem(note("Lets ChatGPT read and add your tasks"))
             return
-        case .starting:
-            menu.addItem(note("Starting…"))
-        case .running:
-            menu.addItem(note("Listening on 127.0.0.1:\(AssistantAccess.port)"))
-        case .failed(let message):
-            menu.addItem(note("Couldn't start: \(message)"))
+        case .connecting:
+            menu.addItem(note("Connecting…"))
+        case .connected:
+            menu.addItem(note("Ready"))
+        case .offline(let reason):
+            menu.addItem(note("Offline: \(reason)"))
         }
 
         let connected = assistant.connectedAppNames
         if !connected.isEmpty {
-            menu.addItem(note("Connected: \(connected.joined(separator: ", "))"))
+            menu.addItem(note("Signed in: \(connected.joined(separator: ", "))"))
         }
-
-        menu.addItem(item("Copy ngrok Command for ChatGPT Web", #selector(copyNgrokCommand)))
-        menu.addItem(item("Set Up Codex & ChatGPT Desktop…", #selector(setUpCodex)))
-        menu.addItem(item("Copy Codex Configuration", #selector(copyCodexConfiguration)))
-        menu.addItem(item("Disconnect All Apps…", #selector(disconnectAll)))
+        menu.addItem(item("Copy ChatGPT Link", #selector(copyConnectorURL)))
+        if !connected.isEmpty {
+            menu.addItem(item("Sign Out All Apps…", #selector(disconnectAll)))
+        }
     }
 
     private func item(_ title: String, _ action: Selector) -> NSMenuItem {
@@ -111,49 +109,11 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         assistant.setEnabled(!assistant.isEnabled)
     }
 
-    /// Adds littlelog to `~/.codex/config.toml`, which the Codex CLI and the ChatGPT desktop app
-    /// share. The sandbox only allows writing a file the user picks, so they confirm it here.
-    @objc private func setUpCodex() {
+    @objc private func copyConnectorURL() {
         guard let assistant else { return }
-        NSApp.activate()
-        let picker = NSOpenPanel()
-        picker.title = "Set Up Codex & ChatGPT Desktop"
-        picker.message = "Choose config.toml in your .codex folder. littlelog adds its own section and leaves the rest unchanged."
-        picker.prompt = "Add littlelog"
-        picker.directoryURL = Self.realHomeDirectory.appending(path: ".codex", directoryHint: .isDirectory)
-        picker.showsHiddenFiles = true
-        picker.canChooseDirectories = false
-        picker.allowsMultipleSelection = false
-        picker.allowedContentTypes = [UTType(filenameExtension: "toml") ?? .plainText]
-        guard picker.runModal() == .OK, let url = picker.url else { return }
-
-        do {
-            let existing = try String(contentsOf: url, encoding: .utf8)
-            let merged = CodexConfig.merging(existing, block: assistant.codexConfigBlock)
-            // Written in place: the sandbox grants access to this file only, not its folder.
-            try merged.write(to: url, atomically: false, encoding: .utf8)
-            showAlert(
-                "littlelog is set up",
-                "Codex and the ChatGPT desktop app will load it in their next session. Restart them if they're open.",
-                style: .informational
-            )
-        } catch {
-            Logger.app.error("couldn't update Codex config: \(error.localizedDescription, privacy: .public)")
-            showAlert(
-                "Couldn't update config.toml",
-                "\(error.localizedDescription)\n\nUse Copy Codex Configuration and paste it into the file instead.",
-                style: .warning
-            )
-        }
-    }
-
-    @objc private func copyCodexConfiguration() {
-        guard let assistant else { return }
-        copy(assistant.codexConfigBlock)
-    }
-
-    @objc private func copyNgrokCommand() {
-        copy(AssistantAccess.ngrokCommand)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(assistant.connectorURL, forType: .string)
     }
 
     @objc private func disconnectAll() {
@@ -161,16 +121,16 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         NSApp.activate()
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Disconnect all apps?"
-        alert.informativeText = "ChatGPT has to sign in again, and Codex and the ChatGPT desktop app need to be set up again."
-        alert.addButton(withTitle: "Disconnect")
+        alert.messageText = "Sign out all apps?"
+        alert.informativeText = "ChatGPT will ask you to sign in again, and you'll need to allow it on this Mac."
+        alert.addButton(withTitle: "Sign Out")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             try assistant.disconnectAll()
         } catch {
-            Logger.app.error("couldn't disconnect apps: \(error.localizedDescription, privacy: .public)")
-            showAlert("Couldn't disconnect apps", error.localizedDescription, style: .warning)
+            Logger.app.error("couldn't sign out apps: \(error.localizedDescription, privacy: .public)")
+            showAlert("Couldn't sign out apps", error.localizedDescription)
         }
     }
 
@@ -187,32 +147,16 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
             }
         } catch {
             Logger.app.error("open at login failed: \(error.localizedDescription, privacy: .public)")
-            showAlert("Couldn't change Open at Login", error.localizedDescription, style: .warning)
+            showAlert("Couldn't change Open at Login", error.localizedDescription)
         }
     }
 
-    // MARK: Helpers
-
-    private func copy(_ text: String) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-    }
-
-    private func showAlert(_ title: String, _ message: String, style: NSAlert.Style) {
+    private func showAlert(_ title: String, _ message: String) {
         NSApp.activate()
         let alert = NSAlert()
-        alert.alertStyle = style
+        alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = message
         alert.runModal()
-    }
-
-    /// The user's real home folder; inside the sandbox `homeDirectoryForCurrentUser` is the container.
-    private static var realHomeDirectory: URL {
-        if let entry = getpwuid(getuid()), let directory = entry.pointee.pw_dir {
-            return URL(filePath: String(cString: directory), directoryHint: .isDirectory)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
     }
 }

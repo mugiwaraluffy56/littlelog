@@ -47,7 +47,6 @@ final class OAuthStore {
     }
 
     enum Failure: Error, Equatable {
-        case invalidClient
         case invalidGrant(String)
         case invalidRequest(String)
     }
@@ -186,22 +185,15 @@ final class OAuthStore {
     // MARK: Crypto helpers
 
     nonisolated static func s256(_ verifier: String) -> String {
-        base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))
+        SecureRandom.base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))
     }
 
     nonisolated static func hash(_ token: String) -> String {
-        base64URL(Data(SHA256.hash(data: Data(token.utf8))))
+        SecureRandom.base64URL(Data(SHA256.hash(data: Data(token.utf8))))
     }
 
-    nonisolated static func randomToken() throws -> String {
-        try AccessTokenStore.generate()
-    }
-
-    nonisolated static func base64URL(_ data: Data) -> String {
-        data.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
+    private static func randomToken() throws -> String {
+        try SecureRandom.token()
     }
 
     nonisolated static func isAcceptableRedirect(_ uri: String) -> Bool {

@@ -238,6 +238,13 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     // MARK: Keyboard
 
+    private static let commandKeys: [String: PanelCommand] = [
+        "1": .show(.notes),
+        "2": .show(.today),
+        "n": .newItem,
+        "f": .focusSearch,
+    ]
+
     private func handleKey(_ event: NSEvent) -> Bool {
         if let textView = panel.firstResponder as? NSTextView, textView.hasMarkedText() {
             return false
@@ -247,31 +254,26 @@ final class PanelController: NSObject, NSWindowDelegate {
             .subtracting([.capsLock, .numericPad, .function])
 
         if flags == .command, let key = event.charactersIgnoringModifiers?.lowercased() {
-            switch key {
-            case "1": state.select(.notes)
-            case "2": state.select(.today)
-            case "n": state.newItem()
-            case "f": state.focusSearch()
-            case "w": hide(.keyboard)
-            default: return false
+            if key == "w" {
+                hide(.keyboard)
+                return true
             }
-            return true
+            guard let command = Self.commandKeys[key] else { return false }
+            return state.perform(command)
         }
 
         guard flags.isEmpty else { return false }
         switch Int(event.keyCode) {
         case kVK_Escape:
-            if !state.handleEscape() { hide(.keyboard) }
+            if !state.perform(.escape) { hide(.keyboard) }
             return true
         case kVK_Return where !(panel.firstResponder is NSText):
-            // Return on the focused notes list opens the selection; text fields keep their own Return.
-            guard state.section == .notes, state.openNote == nil, state.highlightedNoteID != nil else { return false }
-            state.openHighlightedNote()
-            return true
+            // Return on the notes list opens the highlight; text fields keep their own Return.
+            return state.perform(.openHighlightedNote)
         case kVK_UpArrow:
-            return state.moveHighlight(by: -1)
+            return state.perform(.moveHighlight(-1))
         case kVK_DownArrow:
-            return state.moveHighlight(by: 1)
+            return state.perform(.moveHighlight(1))
         default:
             return false
         }

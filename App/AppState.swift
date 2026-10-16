@@ -16,6 +16,17 @@ enum FocusTarget: Hashable {
     case task(UUID)
 }
 
+/// Everything the keyboard can ask the panel to do. The panel turns key events into commands;
+/// `AppState.perform` is the one place that decides what each does in the current context.
+enum PanelCommand: Equatable {
+    case show(AppSection)
+    case newItem
+    case focusSearch
+    case escape
+    case openHighlightedNote
+    case moveHighlight(Int)
+}
+
 struct FocusRequest: Equatable {
     let target: FocusTarget
     let token = UUID()
@@ -53,6 +64,41 @@ final class AppState {
 
     var editingTaskID: UUID? { editingTask?.id }
 
+    // MARK: Commands
+
+    /// Performs a keyboard command. Returns `false` when the current context has nothing for it
+    /// to do, so the caller can fall back (Escape hides the panel; arrow keys reach the text field).
+    @discardableResult
+    func perform(_ command: PanelCommand) -> Bool {
+        switch command {
+        case .show(let section):
+            select(section)
+            return true
+        case .newItem:
+            switch section {
+            case .notes: newNote()
+            case .today: requestFocus(.newTask)
+            }
+            return true
+        case .focusSearch:
+            if section != .notes {
+                endEditingTask(restoreFocus: false)
+                section = .notes
+            }
+            closeEditor(restoreFocus: false)
+            requestFocus(.search)
+            return true
+        case .escape:
+            return handleEscape()
+        case .openHighlightedNote:
+            guard section == .notes, openNote == nil, highlightedNoteID != nil else { return false }
+            openHighlightedNote()
+            return true
+        case .moveHighlight(let offset):
+            return moveHighlight(by: offset)
+        }
+    }
+
     // MARK: Panel lifecycle
 
     func panelWillAppear() {
@@ -74,7 +120,7 @@ final class AppState {
     }
 
     /// Returns `true` when Escape was consumed by the current context; otherwise the panel hides.
-    func handleEscape() -> Bool {
+    private func handleEscape() -> Bool {
         if editingTask != nil {
             endEditingTask()
             return true
@@ -110,23 +156,6 @@ final class AppState {
             self.section = section
         }
         requestFocus(defaultFocus)
-    }
-
-    /// ⌘N: a new note in Notes, the task field in Today.
-    func newItem() {
-        switch section {
-        case .notes: newNote()
-        case .today: requestFocus(.newTask)
-        }
-    }
-
-    func focusSearch() {
-        if section != .notes {
-            endEditingTask(restoreFocus: false)
-            section = .notes
-        }
-        closeEditor(restoreFocus: false)
-        requestFocus(.search)
     }
 
     // MARK: Notes
@@ -199,7 +228,7 @@ final class AppState {
     }
 
     /// Arrow-key navigation through the notes list. Returns `false` when not applicable.
-    func moveHighlight(by offset: Int) -> Bool {
+    private func moveHighlight(by offset: Int) -> Bool {
         guard section == .notes, openNote == nil, !visibleNoteIDs.isEmpty else { return false }
         let current = highlightedNoteID.flatMap { visibleNoteIDs.firstIndex(of: $0) }
         let next: Int

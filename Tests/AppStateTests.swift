@@ -103,11 +103,11 @@ struct AppStateTests {
         let note = try #require(state.openNote)
         note.title = "x"
         state.searchText = "x"
-        #expect(state.handleEscape())       // closes the editor
+        #expect(state.perform(.escape))       // closes the editor
         #expect(state.openNote == nil)
-        #expect(state.handleEscape())       // clears the search
+        #expect(state.perform(.escape))       // clears the search
         #expect(state.searchText.isEmpty)
-        #expect(!state.handleEscape())      // nothing left: the panel should hide
+        #expect(!state.perform(.escape))      // nothing left: the panel should hide
     }
 
     // MARK: Keyboard highlight
@@ -116,17 +116,48 @@ struct AppStateTests {
         let ids = [UUID(), UUID(), UUID()]
         state.updateVisibleNotes(ids)
         #expect(state.highlightedNoteID == nil)     // nothing is highlighted until an arrow key
-        #expect(state.moveHighlight(by: 1))
+        #expect(state.perform(.moveHighlight(1)))
         #expect(state.highlightedNoteID == ids[0])
-        #expect(state.moveHighlight(by: 1))
+        #expect(state.perform(.moveHighlight(1)))
         #expect(state.highlightedNoteID == ids[1])
-        #expect(state.moveHighlight(by: 5))
+        #expect(state.perform(.moveHighlight(5)))
         #expect(state.highlightedNoteID == ids[2])
-        #expect(state.moveHighlight(by: -9))
+        #expect(state.perform(.moveHighlight(-9)))
         #expect(state.highlightedNoteID == ids[0])
 
         state.select(.today)
-        #expect(!state.moveHighlight(by: 1))
+        #expect(!state.perform(.moveHighlight(1)))
+    }
+
+    // MARK: Commands
+
+    @Test func keyboardFlowsRunAsCommandSequences() throws {
+        // ⌘2 → Today, ⌘N → task field, ⌘F → back to Notes with search focused.
+        #expect(state.perform(.show(.today)))
+        #expect(state.section == .today)
+        #expect(state.perform(.newItem))
+        #expect(state.focusRequest?.target == .newTask)
+        #expect(state.perform(.focusSearch))
+        #expect(state.section == .notes)
+        #expect(state.focusRequest?.target == .search)
+
+        // ⌘N in Notes opens a draft; Return does nothing without a highlight.
+        #expect(state.perform(.newItem))
+        #expect(state.openNote != nil)
+        #expect(!state.perform(.openHighlightedNote))
+    }
+
+    @Test func returnOpensTheHighlightedNote() throws {
+        let context = container.mainContext
+        let note = Note(title: "open me", content: "x")
+        context.insert(note)
+        try context.save()
+
+        state.updateVisibleNotes([note.id])
+        #expect(!state.perform(.openHighlightedNote))   // nothing highlighted yet
+        #expect(state.perform(.moveHighlight(1)))
+        #expect(state.perform(.openHighlightedNote))
+        #expect(state.openNote?.id == note.id)
     }
 
     // MARK: Today

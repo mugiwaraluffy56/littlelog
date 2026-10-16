@@ -8,3 +8,6 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Generated from project.yml by `xcodegen generate`
+*.xcodeproj/

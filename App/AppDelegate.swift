@@ -31,8 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.startObservingDayChanges()
         self.state = state
 
-        let panelController = PanelController(state: state, container: container)
+        let approvals = AccessApprovals()
+        let panelController = PanelController(state: state, container: container, approvals: approvals)
         self.panelController = panelController
+        // A sign-in request opens the panel so its Allow / Don't Allow prompt is seen right away.
+        approvals.onRequest = { [weak panelController] in
+            panelController?.show()
+        }
 
         let hotkey = HotkeyManager { [weak panelController] in
             panelController?.toggle()
@@ -48,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         var assistantSetupError: String?
         do {
-            let assistant = try AssistantAccess(state: state)
+            let assistant = try AssistantAccess(state: state, approvals: approvals)
             assistant.startIfEnabled()
             self.assistant = assistant
         } catch {

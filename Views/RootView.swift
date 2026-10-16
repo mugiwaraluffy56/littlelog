@@ -40,6 +40,7 @@ struct RootView: View {
                 ErrorFooter(message: message)
             }
         }
+        .overlay(alignment: .bottom) { ApprovalBanner() }
         .background { PanelBackground().ignoresSafeArea() }
         .frame(width: Style.panelSize.width, height: Style.panelSize.height)
         .animation(reduceMotion ? nil : Style.motion, value: state.section)

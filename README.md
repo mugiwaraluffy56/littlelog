@@ -9,37 +9,23 @@ littlelog lives in the menu bar (no Dock icon) and opens as a floating panel wit
 
 - macOS 26 or newer, Apple Silicon
 - Xcode 26 or newer (built with Xcode 27.1)
-- [XcodeGen](https://github.com/yonaskolb/XcodeGen) only if you change the file layout: `brew install xcodegen`
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen` — the Xcode project is generated from `project.yml`
 
 ## Build and run
 
 ```bash
-open littlelog.xcodeproj          # then ⌘R in Xcode
+make run                          # generate the project, build, and launch
+make test                         # all tests; narrow with ONLY=OAuthTests or ONLY=OAuthTests/pkceIsRequired
+make generate                     # after adding or moving files (littlelog.xcodeproj is generated, not committed)
+make icon                         # re-render the app icon
+make clean
 ```
 
-or from the command line:
+To work in Xcode: `make generate`, then open `littlelog.xcodeproj` and press ⌘R.
 
-```bash
-xcodebuild -project littlelog.xcodeproj -scheme littlelog -derivedDataPath build/DerivedData build
-open build/DerivedData/Build/Products/Debug/littlelog.app
-```
+## License
 
-The project file is generated from `project.yml`. After adding or removing source files, run:
-
-```bash
-xcodegen generate
-```
-
-## Tests
-
-```bash
-xcodebuild -project littlelog.xcodeproj -scheme littlelog -derivedDataPath build/DerivedData test
-# a single suite or test:
-xcodebuild ... test -only-testing:littlelogTests/AppStateTests
-xcodebuild ... test -only-testing:littlelogTests/AppStateTests/deletingANoteCanBeUndoneAndRedone
-```
-
-The app icon is rendered by `swift scripts/make-icon.swift littlelog/Resources/Assets.xcassets/AppIcon.appiconset`.
+MIT — see [LICENSE](LICENSE).
 
 ## Shortcuts
 
@@ -65,7 +51,8 @@ can read your day and add tasks for you. It's **off by default**.
 Turn it on from the menu bar icon → **Allow Access**. littlelog then serves MCP (spec 2025-11-25, Streamable HTTP)
 at `http://127.0.0.1:48177/mcp`:
 
-- only reachable from this Mac (bound to loopback), and only with littlelog's access token;
+- it listens only on this Mac; ChatGPT on the web reaches it through a tunnel you run (below);
+- every request needs a token: littlelog's own (Codex) or a sign-in you approved on the Mac (ChatGPT);
 - requests from web pages on other origins and DNS-rebinding hosts are rejected;
 - every change goes through the app, so it appears live in the panel and deletions can be undone with ⌘Z;
 - tasks an assistant adds show a small ✦ in Today.
@@ -86,23 +73,26 @@ and paste it in yourself. Start a new Codex/ChatGPT session afterwards, then che
 
 ### ChatGPT on the web and phone
 
-ChatGPT's servers can't reach `127.0.0.1`, so this goes through OpenAI's
-[Secure MCP Tunnel](https://github.com/openai/tunnel-client) (an outbound-only connection; no ports are opened):
+ChatGPT's servers can't reach `127.0.0.1`, so littlelog needs a public HTTPS address, and ChatGPT signs in with
+standard MCP OAuth (dynamic client registration + PKCE). You approve each sign-in in the littlelog panel on your Mac.
 
-1. In ChatGPT, turn on Developer mode (Settings → Apps/Plugins → Advanced; needs a plan that includes it).
-2. At [platform.openai.com → Tunnels](https://platform.openai.com/settings/organization/tunnels), create a tunnel and a
-   restricted runtime key with Tunnels **Read + Use**, and install `tunnel-client` from there.
-3. Menu bar → **Copy Tunnel Command for ChatGPT Web & Phone**, fill in the runtime key and tunnel id, and run it.
-   Keep it running; your Mac must be awake with littlelog open.
-4. In ChatGPT → Settings → Connectors/Plugins → create one with **Connection: Tunnel**, pick your tunnel, no authentication.
+1. Get a free [ngrok](https://ngrok.com) account, then `brew install ngrok` and
+   `ngrok config add-authtoken <your token>`. The free plan includes one permanent domain.
+2. Menu bar → **Copy ngrok Command for ChatGPT Web**, run it (`ngrok http 48177`) and keep it running.
+   Note the `https://….ngrok-free.app` address it shows.
+3. In ChatGPT, turn on Developer mode (Settings → Apps/Plugins → Advanced; needs a plan that includes it), go to
+   [chatgpt.com/plugins](https://chatgpt.com/plugins) → **+** → **Add custom MCP server**, use
+   `https://….ngrok-free.app/mcp` as the server URL and **OAuth** as authentication, then create and install it.
+4. ChatGPT opens a sign-in window (click through ngrok's one-time notice). littlelog pops up on your Mac:
+   **Allow**. Done — type `@littlelog` in a chat.
 
-**Reset Access Token…** disconnects every client at once; set them up again afterwards. **Open at Login** keeps
-littlelog (and the server) available after restarts.
+Your Mac must be awake with littlelog and ngrok running. **Disconnect All Apps…** signs every app out at once.
+**Open at Login** keeps littlelog (and the server) available after restarts.
 
 ## Data
 
 Notes and tasks are stored locally with SwiftData in the app's sandbox container
 (`~/Library/Containers/dev.littlelog.app/Data/Library/Application Support/littlelog.store`), next to the
-assistant access token (`littlelog/assistant-token`, readable only by you).
+assistant access token and sign-ins (`littlelog/assistant-token`, `littlelog/oauth.json` — hashes only — readable only by you).
 There is no sync or telemetry, and nothing is sent anywhere unless you turn on assistant access and connect a client.
 Past days' tasks are kept; Today shows only the current local day.

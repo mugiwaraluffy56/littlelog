@@ -77,10 +77,15 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
             menu.addItem(note("Couldn't start: \(message)"))
         }
 
+        let connected = assistant.connectedAppNames
+        if !connected.isEmpty {
+            menu.addItem(note("Connected: \(connected.joined(separator: ", "))"))
+        }
+
+        menu.addItem(item("Copy ngrok Command for ChatGPT Web", #selector(copyNgrokCommand)))
         menu.addItem(item("Set Up Codex & ChatGPT Desktop…", #selector(setUpCodex)))
         menu.addItem(item("Copy Codex Configuration", #selector(copyCodexConfiguration)))
-        menu.addItem(item("Copy Tunnel Command for ChatGPT Web & Phone", #selector(copyTunnelCommand)))
-        menu.addItem(item("Reset Access Token…", #selector(resetToken)))
+        menu.addItem(item("Disconnect All Apps…", #selector(disconnectAll)))
     }
 
     private func item(_ title: String, _ action: Selector) -> NSMenuItem {
@@ -147,26 +152,25 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         copy(assistant.codexConfigBlock)
     }
 
-    @objc private func copyTunnelCommand() {
-        guard let assistant else { return }
-        copy(assistant.tunnelCommand)
+    @objc private func copyNgrokCommand() {
+        copy(AssistantAccess.ngrokCommand)
     }
 
-    @objc private func resetToken() {
+    @objc private func disconnectAll() {
         guard let assistant else { return }
         NSApp.activate()
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Reset the access token?"
-        alert.informativeText = "Codex, the ChatGPT desktop app and any tunnel using the current token stop working until you set them up again."
-        alert.addButton(withTitle: "Reset Token")
+        alert.messageText = "Disconnect all apps?"
+        alert.informativeText = "ChatGPT has to sign in again, and Codex and the ChatGPT desktop app need to be set up again."
+        alert.addButton(withTitle: "Disconnect")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
-            try assistant.resetToken()
+            try assistant.disconnectAll()
         } catch {
-            Logger.app.error("couldn't reset token: \(error.localizedDescription, privacy: .public)")
-            showAlert("Couldn't reset the token", error.localizedDescription, style: .warning)
+            Logger.app.error("couldn't disconnect apps: \(error.localizedDescription, privacy: .public)")
+            showAlert("Couldn't disconnect apps", error.localizedDescription, style: .warning)
         }
     }
 

@@ -31,7 +31,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// Where the user last dragged the panel, kept per display.
     private var draggedOrigins: [CGDirectDisplayID: NSPoint] = [:]
 
-    init(state: AppState, container: ModelContainer) {
+    init(state: AppState, container: ModelContainer, approvals: AccessApprovals) {
         self.state = state
         panel = LittlelogPanel(
             contentRect: NSRect(origin: .zero, size: Style.panelSize),
@@ -41,7 +41,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         )
         super.init()
         configurePanel()
-        installContent(container: container)
+        installContent(container: container, approvals: approvals)
 
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
@@ -174,9 +174,10 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     /// The hosting controller bridges SwiftUI `.toolbar` and `.searchable` into the panel's real
     /// NSToolbar, so the system draws them as native Liquid Glass toolbar items.
-    private func installContent(container: ModelContainer) {
+    private func installContent(container: ModelContainer, approvals: AccessApprovals) {
         let root = RootView()
             .environment(state)
+            .environment(approvals)
             .modelContainer(container)
         let hosting = NSHostingController(rootView: root)
         hosting.sceneBridgingOptions = [.toolbars, .title]

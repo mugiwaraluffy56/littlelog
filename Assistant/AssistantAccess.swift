@@ -20,22 +20,38 @@ final class AssistantAccess {
 
     private let mcp: MCPServer
     private let tokenStore: AccessTokenStore
+    private let oauthStore: OAuthStore
     private let defaults: UserDefaults
     private var server: LocalHTTPServer?
     private(set) var token: String
 
-    init(state: AppState, tokenStore: AccessTokenStore = AccessTokenStore(), defaults: UserDefaults = .standard) throws {
+    init(
+        state: AppState,
+        approvals: AccessApprovals,
+        tokenStore: AccessTokenStore = AccessTokenStore(),
+        oauthStore: OAuthStore = OAuthStore(url: OAuthStore.defaultURL),
+        defaults: UserDefaults = .standard
+    ) throws {
         self.tokenStore = tokenStore
+        self.oauthStore = oauthStore
         self.defaults = defaults
         let token = try tokenStore.loadOrCreate()
         self.token = token
         // The MCP server reads the token through this box, so a reset applies to the next request.
         let box = TokenBox(token)
         tokenBox = box
-        mcp = MCPServer(state: state, token: { box.value })
+        let oauth = OAuthEndpoints(store: oauthStore) { appName, returnHost in
+            await approvals.requestApproval(appName: appName, returnHost: returnHost)
+        }
+        mcp = MCPServer(state: state, token: { box.value }, oauth: oauth)
     }
 
     private let tokenBox: TokenBox
+
+    /// Apps signed in through OAuth (ChatGPT on the web), oldest first.
+    var connectedAppNames: [String] {
+        oauthStore.connectedClients.map(\.name)
+    }
 
     var isEnabled: Bool {
         defaults.bool(forKey: Self.enabledDefaultsKey)
@@ -50,8 +66,9 @@ final class AssistantAccess {
         enabled ? start() : stop()
     }
 
-    /// Replaces the token; every connected client must be set up again.
-    func resetToken() throws {
+    /// Signs out every app: replaces the static token and revokes all OAuth sign-ins.
+    func disconnectAll() throws {
+        try oauthStore.revokeAll()
         token = try tokenStore.replace()
         tokenBox.value = token
     }
@@ -116,20 +133,10 @@ final class AssistantAccess {
         """
     }
 
-    /// Runs OpenAI's Secure MCP Tunnel client so ChatGPT on the web and phone can reach littlelog
-    /// while this Mac is awake. The tunnel id and runtime key come from platform.openai.com.
-    /// The token is passed by `env:` reference, so it never appears in the process list.
-    var tunnelCommand: String {
-        """
-        export CONTROL_PLANE_API_KEY="PASTE_YOUR_RUNTIME_KEY"
-        export LITTLELOG_BEARER="Bearer \(token)"
-        tunnel-client run \\
-          --control-plane.tunnel-id PASTE_YOUR_TUNNEL_ID \\
-          --mcp.server-url \(Self.endpoint) \\
-          --mcp.extra-headers "Authorization: env:LITTLELOG_BEARER" \\
-          --mcp.discovery-extra-headers "Authorization: env:LITTLELOG_BEARER"
-        """
-    }
+    /// Gives littlelog a public HTTPS address for ChatGPT on the web and phone. ngrok's free plan
+    /// includes one permanent domain, used automatically. Every request through it still needs
+    /// a sign-in that was approved on this Mac.
+    static let ngrokCommand = "ngrok http \(port)"
 }
 
 /// Mutable holder so the server closure sees token resets without being rebuilt.
@@ -177,7 +184,7 @@ struct AccessTokenStore {
     }
 
     /// 32 random bytes, base64url without padding.
-    static func generate() throws -> String {
+    nonisolated static func generate() throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         guard status == errSecSuccess else {

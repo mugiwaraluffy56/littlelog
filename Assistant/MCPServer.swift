@@ -10,26 +10,36 @@ final class MCPServer {
     private let tools: AssistantTools
     private let state: AppState
     private let token: () -> String
+    private let oauth: OAuthEndpoints
 
-    init(state: AppState, token: @escaping () -> String) {
+    /// - Parameters:
+    ///   - token: the static token for local clients configured by hand (Codex, the tunnel).
+    ///   - oauth: sign-in for clients that can only do OAuth (ChatGPT on the web).
+    init(state: AppState, token: @escaping () -> String, oauth: OAuthEndpoints) {
         self.state = state
         self.tools = AssistantTools(state: state)
         self.token = token
+        self.oauth = oauth
     }
 
-    func respond(to request: HTTPRequest) -> HTTPResponse {
+    func respond(to request: HTTPRequest) async -> HTTPResponse {
+        guard let base = Self.baseURL(for: request) else {
+            return .text("Host not allowed", status: 403)
+        }
+        if let response = await oauth.respond(to: request, baseURL: base) {
+            return response
+        }
         guard request.path == Self.endpointPath else {
             return .text("Not found", status: 404)
         }
-        // Reject browsers on other origins and DNS-rebinding hosts before anything else.
+        // Browsers on other origins (DNS rebinding, malicious pages) are refused outright.
         if let origin = request.header("origin"), !Self.isLoopback(originHost(origin)) {
             return .text("Origin not allowed", status: 403)
         }
-        guard let host = request.header("host"), Self.isLoopback(Self.hostname(fromHostHeader: host)) else {
-            return .text("Host not allowed", status: 403)
-        }
-        guard Self.isAuthorized(request.header("authorization"), token: token()) else {
-            return .text("Missing or invalid access token", status: 401, headers: ["WWW-Authenticate": "Bearer realm=\"littlelog\""])
+        guard isAuthorized(request.header("authorization")) else {
+            return .text("Missing or invalid access token", status: 401, headers: [
+                "WWW-Authenticate": "Bearer realm=\"littlelog\", resource_metadata=\"\(base)/.well-known/oauth-protected-resource\"",
+            ])
         }
         guard request.method == "POST" else {
             return .text("Use POST", status: 405, headers: ["Allow": "POST"])
@@ -153,10 +163,32 @@ final class MCPServer {
         return ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host)
     }
 
-    nonisolated static func isAuthorized(_ header: String?, token: String) -> Bool {
-        guard let header, header.lowercased().hasPrefix("bearer ") else { return false }
-        let presented = header.dropFirst("bearer ".count).trimmingCharacters(in: .whitespaces)
-        return constantTimeEquals(presented, token)
+    private func isAuthorized(_ header: String?) -> Bool {
+        guard let presented = Self.bearerToken(header) else { return false }
+        return Self.constantTimeEquals(presented, token()) || oauth.store.isValidAccessToken(presented)
+    }
+
+    nonisolated static func bearerToken(_ header: String?) -> String? {
+        guard let header, header.lowercased().hasPrefix("bearer ") else { return nil }
+        let token = header.dropFirst("bearer ".count).trimmingCharacters(in: .whitespaces)
+        return token.isEmpty ? nil : token
+    }
+
+    /// The public base URL of this request: loopback hosts as-is, or a tunnel's HTTPS host.
+    /// Other hosts are refused, so a DNS-rebinding name pointed at 127.0.0.1 gets nowhere.
+    nonisolated static func baseURL(for request: HTTPRequest) -> String? {
+        guard let host = request.header("host")?.trimmingCharacters(in: .whitespaces), !host.isEmpty else {
+            return nil
+        }
+        if isLoopback(hostname(fromHostHeader: host)) {
+            return "http://\(host)"
+        }
+        // Tunnels (ngrok, cloudflared, OpenAI's tunnel) mark forwarded HTTPS traffic. Browsers
+        // can't set this header cross-origin without a preflight, which this server never allows.
+        guard request.header("x-forwarded-proto")?.lowercased().split(separator: ",").first?
+            .trimmingCharacters(in: .whitespaces) == "https"
+        else { return nil }
+        return "https://\(host)"
     }
 
     nonisolated static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {

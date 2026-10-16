@@ -4,6 +4,8 @@ nonisolated struct HTTPRequest: Sendable {
     let method: String
     /// The request target without its query string, e.g. `/mcp`.
     let path: String
+    /// Percent-decoded query parameters; the first occurrence of a name wins.
+    var query: [String: String] = [:]
     let version: String
     /// Header names are lowercased; repeated headers are joined with ", ".
     let headers: [String: String]
@@ -33,6 +35,35 @@ nonisolated struct HTTPResponse: Sendable, Equatable {
         }
     }
 
+    static func redirect(to location: String) -> HTTPResponse {
+        HTTPResponse(status: 302, headers: ["Location": location])
+    }
+
+    /// A small self-contained page for people who land on a sign-in URL in a browser.
+    static func page(title: String, message: String, status: Int) -> HTTPResponse {
+        func escape(_ text: String) -> String {
+            text.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+                .replacingOccurrences(of: "\"", with: "&quot;")
+        }
+        let html = """
+        <!doctype html><html lang="en"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>\(escape(title))</title>
+        <style>
+        :root { color-scheme: light dark; }
+        body { font: 15px/1.5 -apple-system, system-ui, sans-serif; display: grid; place-items: center;
+               min-height: 100vh; margin: 0; padding: 0 16px; background: Canvas; color: CanvasText; }
+        main { max-width: 420px; text-align: center; }
+        h1 { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
+        p { margin: 0; opacity: .7; }
+        </style></head>
+        <body><main><h1>\(escape(title))</h1><p>\(escape(message))</p></main></body></html>
+        """
+        return HTTPResponse(status: status, headers: ["Content-Type": "text/html; charset=utf-8"], body: Data(html.utf8))
+    }
+
     static func text(_ message: String, status: Int, headers: [String: String] = [:]) -> HTTPResponse {
         var merged = headers
         merged["Content-Type"] = "text/plain; charset=utf-8"
@@ -55,7 +86,9 @@ nonisolated struct HTTPResponse: Sendable, Equatable {
     static func reason(for status: Int) -> String {
         switch status {
         case 200: "OK"
+        case 201: "Created"
         case 202: "Accepted"
+        case 302: "Found"
         case 400: "Bad Request"
         case 401: "Unauthorized"
         case 403: "Forbidden"
@@ -136,14 +169,32 @@ nonisolated enum HTTPParser {
         let bodyEnd = bodyStart + length
 
         let target = String(requestLine[1])
-        let path = target.split(separator: "?", maxSplits: 1).first.map(String.init) ?? target
+        let parts = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let path = parts.first.map(String.init) ?? target
+        let query = parts.count > 1 ? formDecode(String(parts[1])) : [:]
         let request = HTTPRequest(
             method: String(requestLine[0]),
             path: path,
+            query: query,
             version: String(requestLine[2]),
             headers: headers,
             body: Data(buffer[bodyStart..<bodyEnd])
         )
         return .request(request, remainder: Data(buffer[bodyEnd...]))
+    }
+
+    /// Decodes `application/x-www-form-urlencoded` text (also used for query strings).
+    static func formDecode(_ text: String) -> [String: String] {
+        var result: [String: String] = [:]
+        for pair in text.split(separator: "&") {
+            let pieces = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            func decode(_ value: Substring) -> String {
+                String(value).replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? String(value)
+            }
+            let name = decode(pieces[0])
+            guard !name.isEmpty, result[name] == nil else { continue }
+            result[name] = pieces.count > 1 ? decode(pieces[1]) : ""
+        }
+        return result
     }
 }

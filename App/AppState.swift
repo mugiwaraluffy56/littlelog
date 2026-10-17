@@ -103,7 +103,7 @@ final class AppState {
 
     func panelWillAppear() {
         library.refreshDay()
-        requestFocus(defaultFocus)
+        if let target = defaultFocus { requestFocus(target) }
     }
 
     func panelDidHide() {
@@ -139,9 +139,10 @@ final class AppState {
 
     // MARK: Navigation and focus
 
-    var defaultFocus: FocusTarget {
+    /// Where focus lands by default. The Notes list takes none: search is only focused on request (⌘F).
+    var defaultFocus: FocusTarget? {
         switch section {
-        case .notes: openNote == nil ? .search : .noteBody
+        case .notes: openNote == nil ? nil : .noteBody
         case .today: .newTask
         }
     }
@@ -155,7 +156,7 @@ final class AppState {
             endEditingTask(restoreFocus: false)
             self.section = section
         }
-        requestFocus(defaultFocus)
+        if let target = defaultFocus { requestFocus(target) }
     }
 
     // MARK: Notes

@@ -24,6 +24,7 @@ struct DayKeyResolveTests {
         let calendar = try calendar()
         #expect(DayKey.resolve("2026-12-31", now: now, calendar: calendar) == "2026-12-31")
         #expect(DayKey.resolve("2028-02-29", now: now, calendar: calendar) == "2028-02-29")
+        #expect(DayKey.resolve("0000-01-01", now: now, calendar: calendar) == nil)
         #expect(DayKey.resolve("2026-02-30", now: now, calendar: calendar) == nil)
         #expect(DayKey.resolve("2026-1-5", now: now, calendar: calendar) == nil)
         #expect(DayKey.resolve("next friday", now: now, calendar: calendar) == nil)

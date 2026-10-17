@@ -46,7 +46,12 @@ final class OAuthEndpoints {
         guard let metadata = try? JSONValue.decode(request.body), metadata.objectValue != nil else {
             return Self.oauthError("invalid_client_metadata", "Body must be a JSON object", status: 400)
         }
-        let redirects = metadata["redirect_uris"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        guard let redirectValues = metadata["redirect_uris"]?.arrayValue,
+              redirectValues.allSatisfy({ $0.stringValue != nil })
+        else {
+            return Self.oauthError("invalid_client_metadata", "redirect_uris must be an array of strings", status: 400)
+        }
+        let redirects = redirectValues.compactMap(\.stringValue)
         if let method = metadata["token_endpoint_auth_method"]?.stringValue, method != "none" {
             return Self.oauthError("invalid_client_metadata", "Only public clients (token_endpoint_auth_method none) are supported", status: 400)
         }

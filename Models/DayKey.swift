@@ -37,6 +37,7 @@ nonisolated enum DayKey {
         else { return nil }
         let components = DateComponents(year: year, month: month, day: day, hour: 12)
         guard let date = calendar.date(from: components),
+              calendar.component(.year, from: date) == year,
               calendar.component(.month, from: date) == month,
               calendar.component(.day, from: date) == day
         else { return nil }

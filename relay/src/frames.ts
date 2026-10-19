@@ -94,7 +94,11 @@ export function decodeResponseFrame(text: string): DecodedResponse | null {
     if (RETURNED_RESPONSE_HEADERS.includes(name.toLowerCase())) headers.push([name, String(value)]);
   }
   const status = Number.isInteger(frame.status) && frame.status >= 200 && frame.status <= 599 ? frame.status : 502;
-  return { id: frame.id, status, headers, body: fromBase64(frame.body ?? "") };
+  try {
+    return { id: frame.id, status, headers, body: fromBase64(frame.body ?? "") };
+  } catch {
+    return null;
+  }
 }
 
 export function toBase64(bytes: Uint8Array): string {

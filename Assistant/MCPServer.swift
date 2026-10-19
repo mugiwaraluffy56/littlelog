@@ -97,6 +97,9 @@ final class MCPServer {
         guard case .object(let object) = message else {
             return .json(Self.error(id: .null, code: -32600, message: "Send one JSON-RPC message per request"), status: 400)
         }
+        guard object["jsonrpc"] == "2.0" else {
+            return .json(Self.error(id: object["id"] ?? .null, code: -32600, message: "jsonrpc must be \"2.0\""), status: 400)
+        }
         guard let method = object["method"]?.stringValue else {
             // A response from the client; this server never sends requests, so just accept it.
             return HTTPResponse(status: 202)

@@ -25,6 +25,7 @@ const withSecret = { ...fixtures.response.frame, headers: { ...fixtures.response
 deepStrictEqual(decodeResponseFrame(JSON.stringify(withSecret))?.headers, Object.entries(fixtures.response.mac.headers));
 deepStrictEqual(decodeResponseFrame(JSON.stringify({ ...fixtures.response.frame, status: 99 }))?.status, 502);
 deepStrictEqual(decodeResponseFrame("not json"), null);
+deepStrictEqual(decodeResponseFrame(JSON.stringify({ ...fixtures.response.frame, body: "%%%" })), null);
 deepStrictEqual(decodeResponseFrame(JSON.stringify({ type: "request", id: "x" })), null);
 
 // Routes.

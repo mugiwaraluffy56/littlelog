@@ -157,6 +157,16 @@ struct OAuthTests {
         #expect(await server.respond(to: request("POST", "/oauth/register", body: badRegistration)).status == 400)
     }
 
+    @Test func registrationRejectsNonStringRedirects() async throws {
+        let (server, _) = try makeServer()
+        let body = try ([
+            "redirect_uris": [.string(redirect), 42],
+        ] as JSONValue).encoded()
+        let response = await server.respond(to: request("POST", "/oauth/register", body: body))
+        #expect(response.status == 400)
+        #expect(try JSONValue.decode(response.body)["error"] == "invalid_client_metadata")
+    }
+
     @Test func pkceIsRequired() async throws {
         let (server, _) = try makeServer()
         let clientID = try await register(server)

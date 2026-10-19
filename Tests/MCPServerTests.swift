@@ -126,6 +126,18 @@ struct MCPServerTests {
         #expect(batch.status == 400)
     }
 
+    @Test func requiresJSONRPCVersion() async throws {
+        let messages: [JSONValue] = [
+            ["id": 1, "method": "ping"],
+            ["jsonrpc": "1.0", "id": 2, "method": "ping"],
+        ]
+        for message in messages {
+            let response = try await post(message)
+            #expect(response.status == 400)
+            #expect(try JSONValue.decode(response.body)["error"]?["code"] == -32600)
+        }
+    }
+
     // MARK: Security
 
     @Test func requiresASignedInToken() async throws {
